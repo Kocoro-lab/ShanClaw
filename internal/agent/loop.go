@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -260,6 +261,9 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			result = ToolResult{Content: fmt.Sprintf("tool error: %v", err), IsError: true}
 		}
 
+		// Strip base64 image blobs before they enter LLM context or terminal
+		result.Content = sanitizeResult(result.Content)
+
 		// Post-tool-use hook (fire-and-forget)
 		if a.hookRunner != nil {
 			_ = a.hookRunner.RunPostToolUse(ctx, fc.Name, argsStr, result.Content, "")
@@ -333,6 +337,35 @@ func (a *AgentLoop) logAudit(toolName, argsStr, outputSummary, decision string, 
 		Approved:      approved,
 		DurationMs:    durationMs,
 	})
+}
+
+// base64ImagePattern matches long base64 strings that start with known image signatures.
+// PNG starts with iVBOR, JPEG with /9j/.
+var base64ImagePattern = regexp.MustCompile(`(?:(?:"[^"]*(?:base64|image|data)[^"]*"\s*:\s*")|(?:^|\s))([/+A-Za-z0-9](?:iVBOR|/9j/)[A-Za-z0-9+/=\s]{200,})`)
+
+// rawBase64Pattern matches any standalone base64 blob of 500+ chars (likely binary data).
+var rawBase64Pattern = regexp.MustCompile(`[A-Za-z0-9+/]{500,}={0,2}`)
+
+// sanitizeResult replaces base64 image blobs in tool output with a short placeholder
+// to avoid polluting LLM context and terminal output with huge binary strings.
+func sanitizeResult(content string) string {
+	result := base64ImagePattern.ReplaceAllStringFunc(content, func(match string) string {
+		// Estimate original byte size (base64 is ~4/3 ratio)
+		b64Len := len(strings.Map(func(r rune) rune {
+			if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '+' || r == '/' || r == '=' {
+				return r
+			}
+			return -1
+		}, match))
+		bytes := b64Len * 3 / 4
+		return fmt.Sprintf("[image: %d bytes]", bytes)
+	})
+	// Catch any remaining large base64 blobs not matched by the image-specific pattern
+	result = rawBase64Pattern.ReplaceAllStringFunc(result, func(match string) string {
+		bytes := len(match) * 3 / 4
+		return fmt.Sprintf("[binary data: %d bytes]", bytes)
+	})
+	return result
 }
 
 // formatToolResult builds a single assistant message containing the tool call

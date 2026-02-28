@@ -36,6 +36,31 @@ go install -ldflags "-X github.com/Kocoro-lab/shan/cmd.Version=0.1.0" .
 shan --help
 ```
 
+## Setup
+
+Shannon CLI requires a Gateway API for LLM completions and remote tools.
+
+**Option A: Shannon Cloud** — get an API key from [shannon.run](https://shannon.run):
+
+```bash
+shan --setup
+# Enter endpoint: https://api.shannon.run
+# Enter API key: <your key from shannon.run>
+```
+
+**Option B: Self-hosted** — run the open-source [Shannon Gateway](https://github.com/Kocoro-lab/Shannon) locally:
+
+```bash
+# Clone and run Shannon Gateway (see repo for full instructions)
+git clone https://github.com/Kocoro-lab/Shannon.git
+cd Shannon && docker compose up -d
+
+# Point shan to your local instance
+shan --setup
+# Enter endpoint: http://localhost:8080
+# Enter API key: (leave empty for local)
+```
+
 ## Quick Start
 
 ```bash
@@ -45,17 +70,68 @@ shan
 # One-shot mode — ask a question and get an answer
 shan "who is wayland zhang"
 
-# Let Shannon control your Mac — auto-approve tool calls
-shan -y "take a screenshot and tell me what's on my screen"
-
-# Research using web search
-shan "what happened in the news today"
-
-# File operations
-shan "find all TODO comments in this project"
-
 # Configure your endpoint and API key
 shan --setup
+```
+
+### Usage Examples
+
+**Web Search & Research**
+```bash
+shan "what happened in the news today"
+shan "compare React vs Vue for a new project"
+```
+
+**File Operations**
+```bash
+shan "find all TODO comments in this project"
+shan "read the main.go file and explain what it does"
+shan "create a .gitignore for a Go project"
+shan "replace all tabs with spaces in config.yaml"
+```
+
+**Shell & System**
+```bash
+shan "run the tests and fix any failures"
+shan "what's using port 8080"
+shan "show my system info — CPU, memory, disk"
+shan "list all running node processes"
+```
+
+**macOS Automation** (use `-y` to auto-approve)
+```bash
+shan -y "take a screenshot and tell me what's on my screen"
+shan -y "open Safari and navigate to github.com"
+shan -y "send me a notification when you're done"
+shan -y "copy the current date to my clipboard"
+shan -y "type 'Hello World' into the active text field"
+```
+
+**Browser Automation**
+```bash
+shan -y "open https://news.ycombinator.com and get the top 5 stories"
+shan -y "navigate to example.com and take a browser screenshot"
+```
+
+**MCP Integrations** (requires MCP server config)
+```bash
+shan "list my github repos"
+shan "create an issue in myrepo titled 'Bug: login fails'"
+shan "search slack for messages about deployment"
+shan "show all tables in the database"
+```
+
+### Interactive Commands
+
+In the TUI (`shan`), type `/` to access built-in commands:
+
+```bash
+/research deep "latest advances in AI agents"    # deep research via Gateway
+/swarm "build a marketing plan for our launch"   # multi-agent orchestration
+/model large                                      # switch to large model
+/copy                                             # copy last response to clipboard
+/sessions                                         # browse and resume past sessions
+/session new                                      # start a fresh session
 ```
 
 ## Requirements
@@ -597,6 +673,12 @@ go build -o shan .           # build
 go test ./...                # run all tests
 go vet ./...                 # lint
 ```
+
+## Known Limitations
+
+- **Vision**: Screenshot analysis works via base64 encoding through MCP filesystem tools, which is token-intensive. Native image content block support (sending images directly to the vision LLM) is not yet implemented — requires Shannon API image input support.
+- **Streaming**: One-shot mode does not stream responses; it waits for the full LLM response before displaying.
+- **Windows/Linux**: Local tools (clipboard, notifications, AppleScript, screenshot, computer) are macOS-only.
 
 ## License
 

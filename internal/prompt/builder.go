@@ -2,6 +2,7 @@ package prompt
 
 import (
 	"strings"
+	"time"
 )
 
 // Layer character budgets.
@@ -77,6 +78,7 @@ func BuildSystemPrompt(opts PromptOptions) string {
 // buildContext assembles the context section from CWD and session info.
 func buildContext(cwd, sessionInfo string) string {
 	var parts []string
+	parts = append(parts, "Current date: "+time.Now().Format("2006-01-02 15:04 MST"))
 	if cwd != "" {
 		parts = append(parts, "Working directory: "+cwd)
 	}

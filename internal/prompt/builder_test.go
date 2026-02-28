@@ -171,8 +171,12 @@ func TestBuildSystemPrompt_NoContext(t *testing.T) {
 		BasePrompt: "Base.",
 	})
 
-	if strings.Contains(result, "## Context") {
-		t.Errorf("unexpected Context section when CWD and SessionInfo are empty")
+	// Context section always present (contains current date)
+	if !strings.Contains(result, "## Context") {
+		t.Errorf("expected Context section with current date")
+	}
+	if !strings.Contains(result, "Current date:") {
+		t.Errorf("expected current date in context")
 	}
 }
 

@@ -138,6 +138,7 @@ func New(cfg *config.Config, version string) *Model {
 	ta.SetHeight(1)
 	ta.SetWidth(width - 4)
 	ta.ShowLineNumbers = false
+	ta.CharLimit = 0 // unlimited
 
 	gateway := client.NewGatewayClient(cfg.Endpoint, cfg.APIKey)
 	shannonDir := config.ShannonDir()
@@ -301,6 +302,12 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case tea.KeyEnter:
+			// Alt+Enter: insert newline instead of submitting
+			if m.state == stateInput && !m.menuVisible && msg.Alt {
+				m.textarea.InsertString("\n")
+				m.adjustTextareaHeight()
+				return m, nil
+			}
 			if m.menuVisible && len(m.menuItems) > 0 {
 				selected := m.menuItems[m.menuIndex]
 				m.textarea.SetValue(selected.cmd + " ")
@@ -459,6 +466,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.state == stateInput {
 		var taCmd tea.Cmd
 		m.textarea, taCmd = m.textarea.Update(msg)
+		m.adjustTextareaHeight()
 		m.updateMenu()
 		return m, taCmd
 	}
@@ -525,6 +533,7 @@ func (m *Model) View() string {
 func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 	input := strings.TrimSpace(m.textarea.Value())
 	m.textarea.Reset()
+	m.textarea.SetHeight(1)
 
 	if input == "" {
 		return m, nil
@@ -582,6 +591,18 @@ func (m *Model) loadSessionHistory(sess *session.Session) {
 func (m *Model) appendOutput(text string) {
 	m.output = append(m.output, text)
 	m.pendingPrints = append(m.pendingPrints, text)
+}
+
+func (m *Model) adjustTextareaHeight() {
+	lines := strings.Count(m.textarea.Value(), "\n") + 1
+	height := lines
+	if height > 6 {
+		height = 6
+	}
+	if height < 1 {
+		height = 1
+	}
+	m.textarea.SetHeight(height)
 }
 
 // flushPrints returns a Cmd that prints all pending output above the view.
@@ -959,7 +980,11 @@ func (m *Model) showSessions() {
 }
 
 func helpText() string {
-	return `Commands:
+	return `Keys:
+  Alt+Enter                      Insert newline (multi-line input)
+  Enter                          Submit message
+
+Commands:
   /help                          Show this help
   /research [quick|standard|deep] <query>  Remote research
   /swarm <query>                 Multi-agent swarm

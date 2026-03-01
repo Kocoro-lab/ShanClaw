@@ -1008,7 +1008,7 @@ func (h *tuiEventHandler) OnToolCall(name string, args string) {
 	h.model.sendOutput(fmt.Sprintf("  Tool: %s(%s)", name, truncate(args, 80)))
 }
 
-func (h *tuiEventHandler) OnToolResult(name string, result agent.ToolResult) {
+func (h *tuiEventHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
 	if result.IsError {
 		h.model.sendOutput(fmt.Sprintf("  Error: %s", truncate(result.Content, 200)))
 	} else if result.Content != "" {

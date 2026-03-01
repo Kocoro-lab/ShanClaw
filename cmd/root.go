@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -142,7 +143,7 @@ func (h *cliEventHandler) OnToolCall(name string, args string) {
 	fmt.Printf("  Tool: %s\n", name)
 }
 
-func (h *cliEventHandler) OnToolResult(name string, result agent.ToolResult) {
+func (h *cliEventHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
 	if result.IsError {
 		fmt.Printf("  Error: %s\n", result.Content)
 	}

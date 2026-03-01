@@ -44,7 +44,7 @@ type TurnUsage struct {
 
 type EventHandler interface {
 	OnToolCall(name string, args string)
-	OnToolResult(name string, result ToolResult)
+	OnToolResult(name string, args string, result ToolResult, elapsed time.Duration)
 	OnText(text string)
 	OnApprovalNeeded(tool string, args string) bool
 	OnUsage(usage TurnUsage)
@@ -278,7 +278,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		a.logAudit(fc.Name, argsStr, result.Content, decision, wasApproved, elapsed.Milliseconds())
 
 		if a.handler != nil {
-			a.handler.OnToolResult(fc.Name, result)
+			a.handler.OnToolResult(fc.Name, argsStr, result, elapsed)
 		}
 
 		// Fold everything into a single assistant message so the LLM sees

@@ -285,7 +285,10 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				result = ToolResult{Content: fmt.Sprintf("tool error: %v", runErr), IsError: true}
 			}
 
-			result.Content = sanitizeResult(result.Content)
+			// Skip sanitizeResult for image results (base64 data is intentional)
+			if len(result.Images) == 0 {
+				result.Content = sanitizeResult(result.Content)
+			}
 
 			if a.hookRunner != nil {
 				_ = a.hookRunner.RunPostToolUse(ctx, fc.Name, argsStr, result.Content, "")
@@ -297,19 +300,45 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				a.handler.OnToolResult(fc.Name, argsStr, result, elapsed)
 			}
 
-			cleanResult := stripLineNumbers(result.Content)
-			if result.IsError {
-				allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nError: %s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), truncateStr(cleanResult, a.resultTrunc)))
+			if len(result.Images) > 0 {
+				// Build content blocks: text result + image blocks
+				var blocks []client.ContentBlock
+				cleanResult := stripLineNumbers(result.Content)
+				text := fmt.Sprintf("I called %s(%s).\n\nResult:\n%s",
+					fc.Name, truncateStr(argsStr, a.argsTrunc), truncateStr(cleanResult, a.resultTrunc))
+				blocks = append(blocks, client.ContentBlock{Type: "text", Text: text})
+				for _, img := range result.Images {
+					blocks = append(blocks, client.ContentBlock{
+						Type: "image",
+						Source: &client.ImageSource{
+							Type:      "base64",
+							MediaType: img.MediaType,
+							Data:      img.Data,
+						},
+					})
+				}
+				// Image content must be in a user role message (Anthropic API requirement)
+				messages = append(messages, client.Message{
+					Role:    "user",
+					Content: client.NewBlockContent(blocks),
+				})
 			} else {
-				allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nResult:\n%s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), truncateStr(cleanResult, a.resultTrunc)))
+				cleanResult := stripLineNumbers(result.Content)
+				if result.IsError {
+					allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nError: %s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), truncateStr(cleanResult, a.resultTrunc)))
+				} else {
+					allResults.WriteString(fmt.Sprintf("I called %s(%s).\n\nResult:\n%s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), truncateStr(cleanResult, a.resultTrunc)))
+				}
 			}
 		}
 
-		// Add all tool results as a single assistant message
-		messages = append(messages, client.Message{
-			Role:    "assistant",
-			Content: client.NewTextContent(allResults.String()),
-		})
+		// Add all tool results as a single assistant message (skip if all results were image tools)
+		if allResults.Len() > 0 {
+			messages = append(messages, client.Message{
+				Role:    "assistant",
+				Content: client.NewTextContent(allResults.String()),
+			})
+		}
 	}
 
 	return "", usage, fmt.Errorf("agent loop exceeded %d iterations", a.maxIter)

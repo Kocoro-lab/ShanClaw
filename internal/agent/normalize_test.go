@@ -26,9 +26,9 @@ func TestNormalizeWebQuery_StripsDatesAndFillers(t *testing.T) {
 			want:     "concurrency golang patterns tutorial",
 		},
 		{
-			name:     "all stripped leaves empty",
+			name:     "all stripped returns sentinel",
 			argsJSON: `{"query":"latest news today headlines"}`,
-			want:     "",
+			want:     "[empty]",
 		},
 		{
 			name:     "non-JSON returns empty",
@@ -126,9 +126,9 @@ func TestExtractResultSignature(t *testing.T) {
 		want    string
 	}{
 		{
-			name:    "multiple URLs extracts sorted unique domains",
-			content: "Found results from https://golang.org/doc and https://blog.golang.org/concurrency and https://golang.org/ref",
-			want:    "blog.golang.org,golang.org",
+			name:    "multiple URLs with paths, deduped and sorted",
+			content: "Found results from https://golang.org/doc and https://blog.golang.org/concurrency and https://golang.org/doc",
+			want:    "https://blog.golang.org/concurrency,https://golang.org/doc",
 		},
 		{
 			name:    "no URLs returns empty",
@@ -136,19 +136,24 @@ func TestExtractResultSignature(t *testing.T) {
 			want:    "",
 		},
 		{
-			name:    "same domains in different order produce same signature",
-			content: "https://example.com/a https://test.org/b https://example.com/c",
-			want:    "example.com,test.org",
+			name:    "different paths = different signatures",
+			content: "https://reuters.com/climate/article1 https://reuters.com/economics/report2",
+			want:    "https://reuters.com/climate/article1,https://reuters.com/economics/report2",
 		},
 		{
-			name:    "http and https both captured",
-			content: "http://old.example.com/page and https://new.example.com/page",
-			want:    "new.example.com,old.example.com",
+			name:    "strips trailing punctuation",
+			content: "See https://example.com/page), also https://test.org/doc.",
+			want:    "https://example.com/page,https://test.org/doc",
 		},
 		{
-			name:    "domains lowercased",
-			content: "https://GoLang.Org/doc https://EXAMPLE.COM/path",
-			want:    "example.com,golang.org",
+			name:    "strips query strings",
+			content: "https://example.com/search?q=test&page=2 https://example.com/search?q=other",
+			want:    "https://example.com/search",
+		},
+		{
+			name:    "lowercased",
+			content: "https://GoLang.Org/DOC https://EXAMPLE.COM/Path",
+			want:    "https://example.com/path,https://golang.org/doc",
 		},
 		{
 			name:    "empty content returns empty",
@@ -161,20 +166,43 @@ func TestExtractResultSignature(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractResultSignature(tt.content)
 			if got != tt.want {
-				t.Errorf("extractResultSignature(%q) = %q, want %q", tt.content, got, tt.want)
+				t.Errorf("extractResultSignature() = %q, want %q", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestExtractResultSignature_OrderIndependent(t *testing.T) {
-	content1 := "https://b.com/x https://a.com/y https://c.com/z"
-	content2 := "https://c.com/1 https://a.com/2 https://b.com/3"
+func TestExtractResultSignature_SameURLsDifferentOrder(t *testing.T) {
+	content1 := "https://b.com/page https://a.com/page"
+	content2 := "https://a.com/page https://b.com/page"
 
 	sig1 := extractResultSignature(content1)
 	sig2 := extractResultSignature(content2)
 
 	if sig1 != sig2 {
-		t.Errorf("same domains in different order should produce same signature, got %q vs %q", sig1, sig2)
+		t.Errorf("same URLs in different order should produce same signature, got %q vs %q", sig1, sig2)
+	}
+}
+
+func TestExtractResultSignature_DifferentPathsDifferentSig(t *testing.T) {
+	// Same domain but different paths should NOT match — this is the key fix
+	sig1 := extractResultSignature("https://reuters.com/climate/report1")
+	sig2 := extractResultSignature("https://reuters.com/economics/report2")
+
+	if sig1 == sig2 {
+		t.Errorf("different paths should produce different signatures, both got %q", sig1)
+	}
+}
+
+func TestNormalizeWebQuery_AllFillersSameSentinel(t *testing.T) {
+	// All-filler queries should match each other via the sentinel
+	n1 := normalizeWebQuery(`{"query":"today news update"}`)
+	n2 := normalizeWebQuery(`{"query":"latest news headlines"}`)
+
+	if n1 != n2 {
+		t.Errorf("all-filler queries should produce same sentinel, got %q vs %q", n1, n2)
+	}
+	if n1 != "[empty]" {
+		t.Errorf("all-filler queries should return [empty], got %q", n1)
 	}
 }

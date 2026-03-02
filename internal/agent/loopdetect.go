@@ -169,10 +169,16 @@ func (ld *LoopDetector) Check(name string) (LoopAction, string) {
 		latestTopic := ""
 		latestResult := ""
 		for i := len(ld.history) - 1; i >= 0; i-- {
-			if ld.history[i].Name == name {
-				latestTopic = ld.history[i].TopicHash
-				latestResult = ld.history[i].ResultSig
-				break
+			if ToolFamilies[ld.history[i].Name] == family {
+				if latestTopic == "" && ld.history[i].TopicHash != "" {
+					latestTopic = ld.history[i].TopicHash
+				}
+				if latestResult == "" && ld.history[i].ResultSig != "" {
+					latestResult = ld.history[i].ResultSig
+				}
+				if latestTopic != "" && latestResult != "" {
+					break
+				}
 			}
 		}
 
@@ -197,9 +203,9 @@ func (ld *LoopDetector) Check(name string) (LoopAction, string) {
 			progressCount = sameResultCount
 		}
 
-		if familyCount >= 7 || progressCount >= 7 {
+		if progressCount >= 7 {
 			return LoopForceStop, fmt.Sprintf(
-				"You have made %d web calls (%d on the same topic). Return your collected results now.", familyCount, progressCount)
+				"You have made %d web calls with %d on the same topic. Return your collected results now.", familyCount, progressCount)
 		}
 		if progressCount >= 5 {
 			return LoopNudge, fmt.Sprintf(

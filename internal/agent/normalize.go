@@ -43,8 +43,9 @@ var dayMonthYearPattern = regexp.MustCompile(`(?i)\b\d{1,2}\s+(?:January|Februar
 // standaloneYearPattern matches 4-digit years (2000-2099) as standalone tokens.
 var standaloneYearPattern = regexp.MustCompile(`\b20\d{2}\b`)
 
-// urlPattern matches http/https URLs for domain extraction.
-var urlPattern = regexp.MustCompile(`https?://([^/\s]+)`)
+// urlPattern matches http/https URLs (domain + path, excluding query strings).
+// Captures the full URL minus trailing punctuation and query params.
+var urlPattern = regexp.MustCompile(`https?://[^\s"'<>\])\},]+`)
 
 // normalizeWebQuery extracts a search query from JSON args, strips dates and
 // filler words, sorts remaining tokens, and returns a canonical form.
@@ -111,27 +112,43 @@ func normalizeWebQuery(argsJSON string) string {
 	}
 
 	sort.Strings(cleaned)
+	if len(cleaned) == 0 {
+		// All tokens were filler/dates — return a sentinel so all-filler
+		// queries match each other (prevents bypassing topic detection).
+		return "[empty]"
+	}
 	return strings.Join(cleaned, " ")
 }
 
-// extractResultSignature extracts unique domains from URLs in text content.
-// Used to detect when different queries return the same set of sources.
+// extractResultSignature extracts unique URLs (domain+path) from text content,
+// strips query strings and trailing punctuation, then hashes the sorted set.
+// More granular than domain-only: reuters.com/climate ≠ reuters.com/economics.
 func extractResultSignature(content string) string {
-	matches := urlPattern.FindAllStringSubmatch(content, -1)
+	matches := urlPattern.FindAllString(content, -1)
 	if len(matches) == 0 {
 		return ""
 	}
 
 	seen := make(map[string]bool)
-	var domains []string
-	for _, m := range matches {
-		domain := strings.ToLower(m[1])
-		if !seen[domain] {
-			seen[domain] = true
-			domains = append(domains, domain)
+	var urls []string
+	for _, u := range matches {
+		// Strip query string
+		if idx := strings.IndexByte(u, '?'); idx != -1 {
+			u = u[:idx]
+		}
+		// Strip fragment
+		if idx := strings.IndexByte(u, '#'); idx != -1 {
+			u = u[:idx]
+		}
+		// Trim trailing punctuation that leaked in
+		u = strings.TrimRight(u, ".,;:!)")
+		u = strings.ToLower(u)
+		if !seen[u] {
+			seen[u] = true
+			urls = append(urls, u)
 		}
 	}
 
-	sort.Strings(domains)
-	return strings.Join(domains, ",")
+	sort.Strings(urls)
+	return strings.Join(urls, ",")
 }

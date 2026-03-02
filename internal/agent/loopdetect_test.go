@@ -252,21 +252,25 @@ func TestLoopDetector_WebFamily_SameTopicNudge(t *testing.T) {
 	}
 }
 
-func TestLoopDetector_WebFamily_CrossToolCounting(t *testing.T) {
+func TestLoopDetector_WebFamily_CrossToolTopicInheritance(t *testing.T) {
 	ld := NewLoopDetector()
-	// web_search x2 + web_fetch x1 = 3 web family calls
-	// Use queries that normalize to the same topic
+	// 2 web_search on same topic (only filler/date differences), then web_fetch.
+	// Family-level topic lookup should inherit the topic hash from web_search.
 	ld.Record("web_search", `{"query":"golang tutorial 2026"}`, false, "", "")
 	ld.Record("web_search", `{"query":"golang tutorial latest"}`, false, "", "")
-	// web_fetch with URL — topic hash will differ, but result sig can match
-	ld.Record("web_fetch", `{"url":"https://go.dev/doc/tutorial"}`, false, "", "go.dev")
-	// Note: This test checks family count. With familyCount=3 but no matching topic/result,
-	// it should NOT trigger (need 7 family calls without topic match, or 3 with topic match).
-	// The web_fetch URL normalizes differently from the search queries.
+	ld.Record("web_fetch", `{"url":"https://go.dev/doc/tutorial"}`, false, "", "")
+
+	// 2 same-topic (from web_search) + 1 different (web_fetch URL) → not yet 3
 	action, _ := ld.Check("web_fetch")
-	// familyCount=3 but progressCount<3 (different topics), so no trigger
 	if action != LoopContinue {
-		t.Errorf("3 web family calls with different topics should continue, got %v", action)
+		t.Errorf("2 same-topic + 1 different should continue, got %v", action)
+	}
+
+	// Add one more same-topic search (only date differs) → 3 same-topic in family → nudge
+	ld.Record("web_search", `{"query":"latest golang tutorial today"}`, false, "", "")
+	action, _ = ld.Check("web_search")
+	if action != LoopNudge {
+		t.Errorf("3 same-topic family calls should nudge, got %v", action)
 	}
 }
 
@@ -294,9 +298,10 @@ func TestLoopDetector_WebFamily_ForceStopAt7(t *testing.T) {
 	}
 }
 
-func TestLoopDetector_WebFamily_7FamilyCallsForceStop(t *testing.T) {
+func TestLoopDetector_WebFamily_7DifferentTopicsNoForceStop(t *testing.T) {
 	ld := NewLoopDetector()
-	// 7 web family calls total (mixed tools, different topics) → force stop
+	// 7 web family calls on DIFFERENT topics should NOT force stop
+	// (legitimate multi-source research)
 	for i := 0; i < 4; i++ {
 		ld.Record("web_search", fmt.Sprintf(`{"query":"topic%d search"}`, i), false, "", "")
 	}
@@ -304,8 +309,8 @@ func TestLoopDetector_WebFamily_7FamilyCallsForceStop(t *testing.T) {
 		ld.Record("web_fetch", fmt.Sprintf(`{"url":"https://example%d.com/page"}`, i), false, "", "")
 	}
 	action, _ := ld.Check("web_fetch")
-	if action != LoopForceStop {
-		t.Errorf("7 web family calls should force stop regardless of topic, got %v", action)
+	if action == LoopForceStop {
+		t.Error("7 web family calls with different topics should NOT force stop")
 	}
 }
 
@@ -376,26 +381,38 @@ func TestLoopDetector_RealWorldWebLoop(t *testing.T) {
 func TestLoopDetector_RealWorldWebLoop_CrossTool(t *testing.T) {
 	ld := NewLoopDetector()
 
-	// 3 searches on same topic
-	ld.Record("web_search", `{"query":"world climate today March 2 2026"}`, false, "", "reuters.com")
-	ld.Record("web_search", `{"query":"world climate March 2 2026 latest"}`, false, "", "reuters.com")
-	ld.Record("web_search", `{"query":"world climate today latest headlines"}`, false, "", "reuters.com")
+	// 3 searches on same topic (all normalize to "climate world")
+	ld.Record("web_search", `{"query":"world climate today March 2 2026"}`, false, "", "")
+	ld.Record("web_search", `{"query":"world climate March 2 2026 latest"}`, false, "", "")
+	ld.Record("web_search", `{"query":"world climate today latest headlines"}`, false, "", "")
 
-	// Should already be nudging
+	// Should already be nudging (3 same-topic)
 	action, _ := ld.Check("web_search")
 	if action != LoopNudge {
 		t.Errorf("expected nudge after 3 same-topic searches, got %v", action)
 	}
 
-	// Switch to web_fetch — family counter should continue
-	ld.Record("web_fetch", `{"url":"https://reuters.com/world/climate"}`, false, "", "reuters.com")
-	ld.Record("web_fetch", `{"url":"https://bbc.com/news/climate"}`, false, "", "reuters.com,bbc.com")
-	ld.Record("web_fetch", `{"url":"https://aljazeera.com/climate"}`, false, "", "reuters.com,bbc.com")
-	ld.Record("web_fetch", `{"url":"https://cnn.com/climate"}`, false, "", "reuters.com,bbc.com")
+	// Switch to web_fetch then back — same-topic counter continues via family lookup
+	// Only filler/date variations so topic hash stays the same
+	ld.Record("web_fetch", `{"url":"https://reuters.com/world/climate"}`, false, "", "")
+	ld.Record("web_search", `{"query":"world climate 2026"}`, false, "", "")
+	ld.Record("web_search", `{"query":"world climate today"}`, false, "", "")
+	ld.Record("web_search", `{"query":"world climate latest"}`, false, "", "")
 
-	// 7 total web family calls → force stop
-	action, _ = ld.Check("web_fetch")
+	// 3 original + 3 more same-topic web_search = 6 same-topic + web_fetch = 7 family
+	// But force stop requires progressCount >= 7, so need 7 same-topic.
+	// The 6 web_search calls all share "climate world" topic.
+	// web_fetch has different topic (URL). So progressCount = 6, not 7.
+	// 6 >= 5 → stronger nudge (not force stop).
+	action, _ = ld.Check("web_search")
+	if action != LoopNudge {
+		t.Errorf("expected nudge after 6 same-topic web calls, got %v", action)
+	}
+
+	// One more same-topic → 7 same-topic → force stop
+	ld.Record("web_search", `{"query":"world climate current"}`, false, "", "")
+	action, _ = ld.Check("web_search")
 	if action != LoopForceStop {
-		t.Errorf("expected force stop after 7 web family calls, got %v", action)
+		t.Errorf("expected force stop after 7 same-topic web calls, got %v", action)
 	}
 }

@@ -27,17 +27,20 @@ const baseSystemPrompt = `You are Shannon, an AI assistant running in a CLI term
 ## Core Rules
 - Always use tools to perform actions. Never claim you did something without a tool call.
 - Be concise. Summarize tool results — do not echo raw output.
+- Format text responses using GitHub-flavored markdown (GFM): use headers, fenced code blocks with language tags, lists, bold/italic, and tables where appropriate.
 - Read before modifying: use file_read before file_edit, screenshot before unfamiliar GUI interactions.
 - Avoid over-engineering. Only do what was asked.
+- Act directly — for simple tasks, just call the tool immediately. No planning preamble needed.
+- When a tool call succeeds and the user's request is fulfilled, summarize the result and STOP. Never repeat a successful action.
 
 ## Verification & Stopping
-- After GUI actions (applescript, computer), take a screenshot to verify the outcome before proceeding. Think: "Did the expected change happen?"
+- After GUI actions (applescript, computer), only take a screenshot if the result is ambiguous or the action may have failed. If the tool returned a clear success message, trust it and move on.
 - If an action fails or produces no visible change after 2 attempts, STOP. Try a fundamentally different method, or ask the user.
 - Do not brute-force a blocked approach. Consider alternatives or ask the user.
 - If a tool call is denied, do not re-attempt the same call.
 
 ## Multi-Step Tasks
-- For complex tasks, briefly state your plan before starting.
+- Only plan for genuinely complex multi-step tasks. Single-action requests (open a file, run a command, search) should be executed immediately.
 - After each step, verify the outcome before proceeding to the next.
 - When multiple tool calls are independent, make them in parallel.
 
@@ -51,7 +54,7 @@ const baseSystemPrompt = `You are Shannon, an AI assistant running in a CLI term
 - bash: shell commands, tests, builds. Only when no dedicated tool exists.
 
 ### GUI & Desktop (macOS)
-- applescript: open/control apps, window management. Returns text only — no visual feedback. Follow with screenshot to verify.
+- applescript: open/control apps, window management. Returns text result. Screenshot only needed if the outcome is unclear.
 - screenshot: capture the screen. Use to verify GUI state or show the user what you see.
 - computer: mouse/keyboard control (click, type, hotkey, move). Returns a screenshot after each action automatically. Use for precise GUI interaction when applescript cannot target an element.
 - notify: macOS notifications.
@@ -73,6 +76,7 @@ type TurnUsage struct {
 	TotalTokens  int
 	CostUSD      float64
 	LLMCalls     int
+	Model        string // actual model from gateway response
 }
 
 type EventHandler interface {
@@ -177,31 +181,45 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 
 	// Loop behavior constants
 	const (
-		maxExactDuplicates     = 3 // stop after N identical consecutive tool calls (same name + args)
-		maxSameToolCalls       = 8 // stop after N consecutive calls to same tool (different args)
 		maxConsecutiveTextOnly = 2 // allows N-1 plan continuations before stopping
+		maxRecentImages        = 5 // keep only last N screenshot messages in context
 	)
 
-	// GUI/automation tools that naturally require many repeated calls —
-	// exempt from the same-tool counter (sameToolCount) since screenshot→action
-	// loops are normal. Note: exact-duplicate detection (dupCount) still applies
-	// to repeatable tools — identical calls even for GUI tools are suspicious.
-	repeatableTools := map[string]bool{
-		"screenshot": true, "computer": true, "applescript": true, "browser": true,
-	}
+	// Loop detection + task-aware state
+	const maxNudges = 3 // force-stop after this many nudge injections
 
-	// Loop detection state
 	var (
-		lastToolCall        string // exact signature (name+args)
-		lastToolName        string // just the tool name
-		dupCount            int    // consecutive exact-duplicate count
-		sameToolCount       int    // consecutive same-tool count (any args)
-		totalToolCalls      int    // total tool calls executed this turn
-		consecutiveTextOnly int    // consecutive planning responses (before tool use)
-		lastText            string // last text output for graceful degradation
+		detector            = NewLoopDetector()
+		toolsUsed           = make(map[string]int)
+		totalToolCalls      int
+		consecutiveTextOnly int
+		lastText            string
+		afterCheckpoint     bool
+		checkpointDone      bool
+		nudgeCount          int
 	)
 
-	for i := 0; i < a.maxIter; i++ {
+	for i := 0; ; i++ {
+		effectiveMax := a.effectiveMaxIter(toolsUsed)
+		if i >= effectiveMax {
+			break
+		}
+
+		// Filter old screenshots to stay within context budget
+		filterOldImages(messages, maxRecentImages)
+
+		// Progress checkpoint at ~60% of effective limit
+		if !checkpointDone && totalToolCalls > 0 {
+			checkpointAt := effectiveMax * 3 / 5
+			if i == checkpointAt {
+				messages = append(messages, client.Message{
+					Role:    "user",
+					Content: client.NewTextContent("You've completed many iterations. Briefly state: (1) what you've accomplished, (2) what remains, (3) whether you should continue or wrap up. Then continue working."),
+				})
+				afterCheckpoint = true
+				checkpointDone = true
+			}
+		}
 		// Call LLM — streaming or blocking
 		var resp *client.CompletionResponse
 		var err error
@@ -230,6 +248,9 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		usage.TotalTokens += resp.Usage.TotalTokens
 		usage.CostUSD += resp.Usage.CostUSD
 		usage.LLMCalls++
+		if resp.Model != "" {
+			usage.Model = resp.Model
+		}
 
 		// Handle text-only responses (no tool calls in this LLM response).
 		//
@@ -249,8 +270,16 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				a.handler.OnText(resp.OutputText)
 			}
 
-			// After tool use, text-only = final answer.
+			// After tool use, text-only = final answer (unless after a checkpoint).
 			if totalToolCalls > 0 {
+				if afterCheckpoint {
+					afterCheckpoint = false
+					messages = append(messages, client.Message{
+						Role:    "assistant",
+						Content: client.NewTextContent(resp.OutputText),
+					})
+					continue
+				}
 				return resp.OutputText, usage, nil
 			}
 
@@ -271,6 +300,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 
 		// Model made tool calls — reset planning counter
 		consecutiveTextOnly = 0
+		afterCheckpoint = false
 
 		// Execute all tool calls
 		toolCalls := resp.AllToolCalls()
@@ -281,49 +311,13 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			lastText = resp.OutputText
 		}
 
+		var worstAction LoopAction
+		var worstMsg string
+
 		for _, fc := range toolCalls {
 			totalToolCalls++
+			toolsUsed[fc.Name]++
 			argsStr := fc.ArgumentsString()
-
-			// Loop detection
-			callSig := fc.Name + ":" + argsStr
-			if callSig == lastToolCall {
-				dupCount++
-			} else {
-				lastToolCall = callSig
-				dupCount = 1
-			}
-			if fc.Name == lastToolName {
-				// GUI/automation tools naturally repeat — don't penalize them.
-				if !repeatableTools[fc.Name] {
-					sameToolCount++
-				}
-			} else {
-				lastToolName = fc.Name
-				sameToolCount = 1
-			}
-			if dupCount >= maxExactDuplicates || sameToolCount >= maxSameToolCalls {
-				messages = append(messages, client.Message{
-					Role:    "user",
-					Content: client.NewTextContent("You've called the same tool repeatedly. Please use the results already available and provide your answer now."),
-				})
-				finalResp, err := a.client.Complete(ctx, client.CompletionRequest{
-					Messages:  messages,
-					ModelTier: a.modelTier,
-				})
-				if err != nil {
-					return "", usage, fmt.Errorf("LLM call failed: %w", err)
-				}
-				usage.InputTokens += finalResp.Usage.InputTokens
-				usage.OutputTokens += finalResp.Usage.OutputTokens
-				usage.TotalTokens += finalResp.Usage.TotalTokens
-				usage.CostUSD += finalResp.Usage.CostUSD
-				usage.LLMCalls++
-				if a.handler != nil {
-					a.handler.OnText(finalResp.OutputText)
-				}
-				return finalResp.OutputText, usage, nil
-			}
 
 			if a.handler != nil {
 				a.handler.OnToolCall(fc.Name, argsStr)
@@ -419,6 +413,27 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					fmt.Fprintf(&allResults, "I called %s(%s).\n\nResult:\n%s\n\n", fc.Name, truncateStr(argsStr, a.argsTrunc), truncateStr(cleanResult, a.resultTrunc))
 				}
 			}
+
+			// Record in sliding-window loop detector
+			errMsg := ""
+			if result.IsError {
+				errMsg = result.Content
+			}
+			resultSig := ""
+			if ToolFamilies[fc.Name] != "" {
+				resultSig = extractResultSignature(result.Content)
+			}
+			detector.Record(fc.Name, argsStr, result.IsError, errMsg, resultSig)
+
+			// Check for stuck loops (escalate to worst action seen)
+			action, msg := detector.Check(fc.Name)
+			if action > worstAction {
+				worstAction = action
+				worstMsg = msg
+			}
+			if action == LoopForceStop {
+				break // stop processing remaining tool calls
+			}
 		}
 
 		// Add all tool results as a single assistant message (skip if all results were image tools)
@@ -428,6 +443,62 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				Content: client.NewTextContent(allResults.String()),
 			})
 		}
+
+		// Handle loop detection results
+		if worstAction == LoopForceStop {
+			messages = append(messages, client.Message{
+				Role:    "user",
+				Content: client.NewTextContent(worstMsg),
+			})
+			finalResp, err := a.client.Complete(ctx, client.CompletionRequest{
+				Messages:  messages,
+				ModelTier: a.modelTier,
+			})
+			if err != nil {
+				return "", usage, fmt.Errorf("LLM call failed: %w", err)
+			}
+			usage.InputTokens += finalResp.Usage.InputTokens
+			usage.OutputTokens += finalResp.Usage.OutputTokens
+			usage.TotalTokens += finalResp.Usage.TotalTokens
+			usage.CostUSD += finalResp.Usage.CostUSD
+			usage.LLMCalls++
+			if a.handler != nil {
+				a.handler.OnText(finalResp.OutputText)
+			}
+			return finalResp.OutputText, usage, nil
+		}
+		if worstAction == LoopNudge {
+			nudgeCount++
+			if nudgeCount >= maxNudges {
+				// Escalate: too many nudges without behavior change → force stop
+				worstAction = LoopForceStop
+				worstMsg = "Multiple approaches have failed. Provide your final answer now with what you have."
+				messages = append(messages, client.Message{
+					Role:    "user",
+					Content: client.NewTextContent(worstMsg),
+				})
+				finalResp, err := a.client.Complete(ctx, client.CompletionRequest{
+					Messages:  messages,
+					ModelTier: a.modelTier,
+				})
+				if err != nil {
+					return "", usage, fmt.Errorf("LLM call failed: %w", err)
+				}
+				usage.InputTokens += finalResp.Usage.InputTokens
+				usage.OutputTokens += finalResp.Usage.OutputTokens
+				usage.TotalTokens += finalResp.Usage.TotalTokens
+				usage.CostUSD += finalResp.Usage.CostUSD
+				usage.LLMCalls++
+				if a.handler != nil {
+					a.handler.OnText(finalResp.OutputText)
+				}
+				return finalResp.OutputText, usage, nil
+			}
+			messages = append(messages, client.Message{
+				Role:    "user",
+				Content: client.NewTextContent(worstMsg),
+			})
+		}
 	}
 
 	// Graceful degradation: return last text with a sentinel error so the
@@ -435,7 +506,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	if lastText != "" {
 		return lastText, usage, ErrMaxIterReached
 	}
-	return "", usage, fmt.Errorf("agent loop exceeded %d iterations", a.maxIter)
+	return "", usage, fmt.Errorf("agent loop exceeded %d iterations", a.effectiveMaxIter(toolsUsed))
 }
 
 // checkPermissionAndApproval runs the permission engine check, then falls back
@@ -588,4 +659,54 @@ func isPlanningResponse(text string, toolNames []string) bool {
 	}
 
 	return false
+}
+
+// effectiveMaxIter returns a dynamic iteration limit based on tools used so far.
+// GUI tasks get a higher limit since screenshot→action loops are normal.
+func (a *AgentLoop) effectiveMaxIter(toolsUsed map[string]int) int {
+	for name := range toolsUsed {
+		if GUITools[name] {
+			if a.maxIter < 75 {
+				return 75
+			}
+			return a.maxIter
+		}
+	}
+	return a.maxIter
+}
+
+// filterOldImages replaces image blocks in old messages with text placeholders,
+// keeping only the N most recent image-bearing messages in context.
+func filterOldImages(messages []client.Message, keep int) {
+	// Collect indices of messages containing image blocks, newest first.
+	var imageIndices []int
+	for i := len(messages) - 1; i >= 0; i-- {
+		if !messages[i].Content.HasBlocks() {
+			continue
+		}
+		for _, b := range messages[i].Content.Blocks() {
+			if b.Type == "image" {
+				imageIndices = append(imageIndices, i)
+				break
+			}
+		}
+	}
+	if len(imageIndices) <= keep {
+		return
+	}
+	// Replace images in oldest messages beyond the keep threshold.
+	for _, idx := range imageIndices[keep:] {
+		var newBlocks []client.ContentBlock
+		for _, b := range messages[idx].Content.Blocks() {
+			if b.Type == "image" {
+				newBlocks = append(newBlocks, client.ContentBlock{
+					Type: "text",
+					Text: "[previous screenshot removed to save context]",
+				})
+			} else {
+				newBlocks = append(newBlocks, b)
+			}
+		}
+		messages[idx].Content = client.NewBlockContent(newBlocks)
+	}
 }

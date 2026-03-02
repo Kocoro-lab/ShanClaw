@@ -467,3 +467,199 @@ func TestIsPlanningResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestEffectiveMaxIter(t *testing.T) {
+	a := &AgentLoop{maxIter: 25}
+
+	// No GUI tools: use default
+	if got := a.effectiveMaxIter(map[string]int{"bash": 3}); got != 25 {
+		t.Errorf("coding tasks: expected 25, got %d", got)
+	}
+
+	// GUI tool present: bump to 75
+	if got := a.effectiveMaxIter(map[string]int{"screenshot": 1, "bash": 2}); got != 75 {
+		t.Errorf("GUI tasks: expected 75, got %d", got)
+	}
+
+	// User set high limit: keep it
+	a.maxIter = 100
+	if got := a.effectiveMaxIter(map[string]int{"screenshot": 1}); got != 100 {
+		t.Errorf("high user limit: expected 100, got %d", got)
+	}
+
+	// Empty toolsUsed: use default
+	a.maxIter = 25
+	if got := a.effectiveMaxIter(map[string]int{}); got != 25 {
+		t.Errorf("empty tools: expected 25, got %d", got)
+	}
+}
+
+func TestFilterOldImages(t *testing.T) {
+	messages := []client.Message{
+		{Role: "system", Content: client.NewTextContent("system prompt")},
+		{Role: "user", Content: client.NewTextContent("take screenshots")},
+	}
+
+	// Add 7 image messages
+	for i := range 7 {
+		messages = append(messages, client.Message{
+			Role: "user",
+			Content: client.NewBlockContent([]client.ContentBlock{
+				{Type: "text", Text: fmt.Sprintf("Screenshot %d", i)},
+				{Type: "image", Source: &client.ImageSource{Type: "base64", MediaType: "image/png", Data: "fake"}},
+			}),
+		})
+	}
+
+	filterOldImages(messages, 5)
+
+	// Count remaining image blocks
+	imageCount := 0
+	for _, msg := range messages {
+		if !msg.Content.HasBlocks() {
+			continue
+		}
+		for _, b := range msg.Content.Blocks() {
+			if b.Type == "image" {
+				imageCount++
+			}
+		}
+	}
+
+	if imageCount != 5 {
+		t.Errorf("expected 5 images after filtering, got %d", imageCount)
+	}
+
+	// Verify the 2 oldest (index 2, 3) were replaced with text placeholders
+	for i := 2; i < 4; i++ {
+		for _, b := range messages[i].Content.Blocks() {
+			if b.Type == "image" {
+				t.Errorf("message %d should not have image blocks after filtering", i)
+			}
+		}
+	}
+
+	// Verify the 5 newest (index 4-8) still have images
+	for i := 4; i < 9; i++ {
+		hasImage := false
+		for _, b := range messages[i].Content.Blocks() {
+			if b.Type == "image" {
+				hasImage = true
+			}
+		}
+		if !hasImage {
+			t.Errorf("message %d should still have image block", i)
+		}
+	}
+}
+
+func TestFilterOldImages_NoOpWhenUnderLimit(t *testing.T) {
+	messages := []client.Message{
+		{Role: "user", Content: client.NewBlockContent([]client.ContentBlock{
+			{Type: "text", Text: "Screenshot"},
+			{Type: "image", Source: &client.ImageSource{Type: "base64", MediaType: "image/png", Data: "fake"}},
+		})},
+	}
+
+	filterOldImages(messages, 5)
+
+	// Should not modify anything
+	imageCount := 0
+	for _, b := range messages[0].Content.Blocks() {
+		if b.Type == "image" {
+			imageCount++
+		}
+	}
+	if imageCount != 1 {
+		t.Errorf("expected 1 image (no filtering needed), got %d", imageCount)
+	}
+}
+
+// TestAgentLoop_ConsecutiveDupForceStop verifies the consecutive duplicate detector
+// forces a stop after back-to-back identical tool calls (2→nudge, 4→force stop).
+func TestAgentLoop_ConsecutiveDupForceStop(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount <= 4 {
+			// 4 consecutive identical calls: nudge at 2,3 → force stop at 4
+			json.NewEncoder(w).Encode(nativeResponse("", "tool_use",
+				toolCall("mock_tool", `{"cmd":"same"}`), 10, 5))
+		} else {
+			// Final forced response (no tools)
+			json.NewEncoder(w).Encode(nativeResponse("Stopped due to loop.", "end_turn", nil, 10, 5))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(&mockTool{name: "mock_tool"})
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+
+	result, _, err := loop.Run(context.Background(), "do something", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Stopped due to loop." {
+		t.Errorf("expected force-stop response, got %q", result)
+	}
+	// 4 tool iterations + 1 forced final = 5 LLM calls
+	if callCount != 5 {
+		t.Errorf("expected 5 LLM calls (4 tool + 1 forced), got %d", callCount)
+	}
+}
+
+// mockErrorTool always returns an error.
+type mockErrorTool struct {
+	name string
+}
+
+func (m *mockErrorTool) Info() ToolInfo {
+	return ToolInfo{
+		Name:        m.name,
+		Description: "mock tool that always fails",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+}
+
+func (m *mockErrorTool) Run(ctx context.Context, args string) (ToolResult, error) {
+	return ToolResult{Content: "permission denied: /etc/shadow", IsError: true}, nil
+}
+
+func (m *mockErrorTool) RequiresApproval() bool { return false }
+
+// TestAgentLoop_ErrorAwareBreaking verifies the detector catches repeated errors.
+// SameToolError threshold=4, nudge at 4,5,6 → force stop via nudge cap → final call.
+func TestAgentLoop_ErrorAwareBreaking(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount <= 6 {
+			// 6 calls to a failing tool: error nudge at 4,5,6 → force stop via cap
+			json.NewEncoder(w).Encode(nativeResponse("", "tool_use",
+				toolCall("failing_tool", fmt.Sprintf(`{"attempt":%d}`, callCount)), 10, 5))
+		} else {
+			// Final forced response (no tools)
+			json.NewEncoder(w).Encode(nativeResponse("Gave up.", "end_turn", nil, 10, 5))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(&mockErrorTool{name: "failing_tool"})
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+
+	result, _, err := loop.Run(context.Background(), "try something", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Gave up." {
+		t.Errorf("expected error-stop response, got %q", result)
+	}
+	// 6 tool iterations + 1 forced final = 7 LLM calls
+	if callCount != 7 {
+		t.Errorf("expected 7 LLM calls (6 tool + 1 forced), got %d", callCount)
+	}
+}

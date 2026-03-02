@@ -25,9 +25,9 @@ var crabBody = []string{
 
 // Color palette for the startup header.
 var (
-	crabColor   = lipgloss.Color("208") // orange — entire crab
-	borderColor = lipgloss.Color("208") // orange — box border
-	accentColor = lipgloss.Color("208") // orange — section headers
+	crabColor   = lipgloss.Color("174") // Claude orange (#d78787) — entire crab
+	borderColor = lipgloss.Color("174") // Claude orange — box border
+	accentColor = lipgloss.Color("174") // Claude orange — section headers
 	dimColor    = lipgloss.Color("243") // medium gray — secondary text
 	infoColor   = lipgloss.Color("39")  // blue — activity header
 )

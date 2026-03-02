@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -104,9 +105,10 @@ type Model struct {
 	textarea      textarea.Model
 	output        []string
 	pendingPrints []string
-	streamingText  string
-	streamingDone  bool
-	spinnerIdx     int
+	streamingText       string
+	streamingDone       bool
+	processingStartTime time.Time
+	spinnerIdx          int
 	spinnerTexts   []string
 	glyphIdx       int
 	colorIdx       int
@@ -504,15 +506,23 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case agentDoneMsg:
 		m.state = stateInput
 		if m.streamingText != "" {
-			m.appendOutput(m.streamingText) // flush remaining incomplete line
+			m.appendOutput(truncateLongResponse(renderMarkdown(m.streamingText, m.width)))
 			m.streamingText = ""
 		}
 		if msg.err != nil {
 			m.appendOutput("Error: " + msg.err.Error())
 		}
+		elapsed := formatElapsed(time.Since(m.processingStartTime))
+		usageDim := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 		if msg.usage != nil {
-			usageDim := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-			m.appendOutput(usageDim.Render(fmt.Sprintf("  tokens: %d | cost: $%.4f", msg.usage.TotalTokens, msg.usage.CostUSD)))
+			usageStr := fmt.Sprintf("  tokens: %d | cost: $%.4f", msg.usage.TotalTokens, msg.usage.CostUSD)
+			if msg.usage.Model != "" {
+				usageStr += " | model: " + msg.usage.Model
+			}
+			usageStr += " | " + elapsed
+			m.appendOutput(usageDim.Render(usageStr))
+		} else {
+			m.appendOutput(usageDim.Render("  " + elapsed))
 		}
 		m.sessions.Save()
 		return m, nil
@@ -577,20 +587,15 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case streamDeltaMsg:
 		m.streamingText += msg.delta
-		// Flush completed lines to scrollback immediately (typewriter effect).
-		// Only keep the last incomplete line in streamingText for View().
-		if idx := strings.LastIndex(m.streamingText, "\n"); idx >= 0 {
-			completedLines := m.streamingText[:idx]
-			m.streamingText = m.streamingText[idx+1:]
-			m.appendOutput(completedLines)
-		}
+		// Accumulate all streamed text — View() shows last N lines as typewriter.
+		// Markdown rendering happens when streaming completes (agentDoneMsg/toolCallMsg).
 		return m, nil
 
 	case toolCallMsg:
 		// Flush any pending streaming text BEFORE showing tool indicator.
-		// This ensures preamble text ("I'll search for...") appears above tool lines.
+		// Render markdown so headings/code/etc. display properly.
 		if m.streamingText != "" {
-			m.appendOutput(m.streamingText)
+			m.appendOutput(renderMarkdown(m.streamingText, m.width))
 			m.streamingText = ""
 		}
 		m.pendingToolName = msg.name
@@ -643,7 +648,12 @@ func (m *Model) View() string {
 		sb.WriteString(barStyle.Render(strings.Repeat("─", barWidth)) + rightInfo)
 	case stateProcessing:
 		if m.streamingText != "" {
-			sb.WriteString(m.streamingText)
+			// Show last N lines for typewriter effect; full text rendered on completion
+			lines := strings.Split(m.streamingText, "\n")
+			if len(lines) > 20 {
+				lines = lines[len(lines)-20:]
+			}
+			sb.WriteString(strings.Join(lines, "\n"))
 		} else if m.pendingToolName != "" {
 			glyph := dotFrames[m.glyphIdx%len(dotFrames)]
 			color := spinColors[m.colorIdx%len(spinColors)]
@@ -655,10 +665,19 @@ func (m *Model) View() string {
 			glyph := dotFrames[m.glyphIdx%len(dotFrames)]
 			color := spinColors[m.colorIdx%len(spinColors)]
 			glyphStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
-			textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
 			spinnerText := m.spinnerTexts[m.spinnerIdx%len(m.spinnerTexts)]
-			sb.WriteString(glyphStyle.Render(glyph) + " " + textStyle.Render(spinnerText))
+			sb.WriteString(glyphStyle.Render(glyph) + " " + renderWaveText(spinnerText, m.glyphIdx))
 		}
+		sb.WriteString("\n")
+		// Bottom status bar with model tier + execution timer (like Claude Code)
+		elapsed := formatElapsed(time.Since(m.processingStartTime))
+		tierDim := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+		rightInfo := tierDim.Render(m.cfg.ModelTier + " " + elapsed)
+		statusBarWidth := m.width - lipgloss.Width(rightInfo)
+		if statusBarWidth < 0 {
+			statusBarWidth = 0
+		}
+		sb.WriteString(barStyle.Render(strings.Repeat("─", statusBarWidth)) + rightInfo)
 	case stateApproval:
 		sb.WriteString(bar)
 		sb.WriteString("\n")
@@ -709,6 +728,7 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 	// Local agent loop
 	m.state = stateProcessing
 	m.streamingDone = false
+	m.processingStartTime = time.Now()
 	sess := m.sessions.Current()
 	// Set title from first user message
 	if sess.Title == "New session" {
@@ -728,7 +748,7 @@ func (m *Model) runAgentLoop(query string, history []client.Message) tea.Cmd {
 		m.agentLoop.SetHandler(handler)
 
 		result, usage, err := m.agentLoop.Run(context.Background(), query, history)
-		if err == nil && result != "" {
+		if result != "" && (err == nil || errors.Is(err, agent.ErrMaxIterReached)) {
 			sess := m.sessions.Current()
 			sess.Messages = append(sess.Messages, client.Message{Role: "assistant", Content: client.NewTextContent(result)})
 		}
@@ -804,6 +824,48 @@ func spinnerTick() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 		return spinnerTickMsg{}
 	})
+}
+
+// renderWaveText renders text with a shimmer effect matching Claude Code's spinner.
+// Base color 174 (muted salmon "Claude orange") with a 3-char-wide highlight at
+// color 216 (light peach) that sweeps across the text.
+func renderWaveText(text string, tick int) string {
+	runes := []rune(text)
+	if len(runes) == 0 {
+		return ""
+	}
+	waveCenter := tick % (len(runes) + 4)
+	baseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("174"))
+	shimmerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("216"))
+	var sb strings.Builder
+	for i, r := range runes {
+		dist := waveCenter - i
+		if dist < 0 {
+			dist = -dist
+		}
+		if dist <= 1 {
+			sb.WriteString(shimmerStyle.Render(string(r)))
+		} else {
+			sb.WriteString(baseStyle.Render(string(r)))
+		}
+	}
+	return sb.String()
+}
+
+// formatElapsed formats a duration as a compact timer string.
+func formatElapsed(d time.Duration) string {
+	s := int(d.Seconds())
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	m := s / 60
+	s = s % 60
+	if m < 60 {
+		return fmt.Sprintf("%dm %ds", m, s)
+	}
+	h := m / 60
+	m = m % 60
+	return fmt.Sprintf("%dh %dm", h, m)
 }
 
 // sendOutput sends output from a goroutine through the bubbletea event loop
@@ -918,6 +980,7 @@ func (m *Model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 			expandedPrompt := strings.ReplaceAll(promptContent, "$ARGUMENTS", args)
 			// Send as a regular user message through the agent loop
 			m.state = stateProcessing
+			m.processingStartTime = time.Now()
 			m.spinnerIdx = 0
 			m.glyphIdx = 0
 			m.colorIdx = 0
@@ -952,6 +1015,7 @@ func (m *Model) handleResearch(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.state = stateProcessing
+	m.processingStartTime = time.Now()
 	m.spinnerIdx = 0
 	m.glyphIdx = 0
 	m.colorIdx = 0
@@ -968,6 +1032,7 @@ func (m *Model) handleSwarm(args []string) (tea.Model, tea.Cmd) {
 	}
 
 	m.state = stateProcessing
+	m.processingStartTime = time.Now()
 	m.spinnerIdx = 0
 	m.glyphIdx = 0
 	m.colorIdx = 0
@@ -1129,7 +1194,7 @@ func (m *Model) runRemote(query string, ctx map[string]any, strategy string) tea
 		}
 
 		if finalResult != "" {
-			m.sendOutput(renderMarkdown(finalResult))
+			m.sendOutput(renderMarkdown(finalResult, m.width))
 			sess := m.sessions.Current()
 			sess.Messages = append(sess.Messages,
 				client.Message{Role: "user", Content: client.NewTextContent(query)},
@@ -1226,20 +1291,14 @@ func (h *tuiEventHandler) OnToolResult(name string, args string, result agent.To
 }
 
 func (h *tuiEventHandler) OnText(text string) {
-	// If streaming deltas already flushed this content, skip the duplicate render.
-	// streamingDone is set when OnStreamDelta receives content for this LLM call.
+	// If streaming deltas were received, skip — the accumulated streamingText
+	// will be markdown-rendered when agentDoneMsg or toolCallMsg is processed.
 	if h.model.streamingDone {
 		h.model.streamingDone = false
-		// Flush any remaining incomplete line that deltas didn't finish
-		if h.model.streamingText != "" {
-			if h.model.program != nil {
-				h.model.program.Send(streamDeltaMsg{delta: "\n"})
-			}
-		}
 		return
 	}
 	// Non-streaming path (no deltas received): render markdown and display
-	h.model.sendOutput(truncateLongResponse(renderMarkdown(text)))
+	h.model.sendOutput(truncateLongResponse(renderMarkdown(text, h.model.width)))
 }
 
 func (h *tuiEventHandler) OnStreamDelta(delta string) {

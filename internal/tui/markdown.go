@@ -9,19 +9,21 @@ import (
 	"github.com/charmbracelet/glamour/ansi"
 )
 
-var mdRenderer *glamour.TermRenderer
-
 // Matches 2+ consecutive blank-looking lines (may contain whitespace or ANSI escapes)
 var blankLineRe = regexp.MustCompile(`(\n[ \t]*(\x1b\[[0-9;]*m)*[ \t]*){3,}`)
+
+// Cached renderer and the width it was built for.
+var (
+	cachedRenderer *glamour.TermRenderer
+	cachedWidth    int
+)
 
 // compactStyle is a Claude Code-inspired style: no margins, minimal spacing,
 // bold headings without color backgrounds, compact lists.
 var compactStyle = ansi.StyleConfig{
 	Document: ansi.StyleBlock{
-		StylePrimitive: ansi.StylePrimitive{
-			Color: stringPtr("252"),
-		},
-		// No margin, no block_prefix/suffix — flush to terminal edge
+		// No Color — use terminal's default foreground (white on dark backgrounds).
+		// Setting an explicit color (e.g. 252) dims all text below terminal default.
 		Margin: uintPtr(0),
 	},
 	BlockQuote: ansi.StyleBlock{
@@ -149,27 +151,40 @@ var compactStyle = ansi.StyleConfig{
 	Table:  ansi.StyleTable{},
 }
 
-func init() {
+// getRenderer returns a glamour renderer sized to the given terminal width.
+// The renderer is cached and only rebuilt when the width changes.
+func getRenderer(width int) *glamour.TermRenderer {
+	if width <= 0 {
+		width = 120
+	}
+	if cachedRenderer != nil && cachedWidth == width {
+		return cachedRenderer
+	}
 	styleJSON, err := json.Marshal(compactStyle)
 	if err != nil {
-		return
+		return nil
 	}
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStylesFromJSONBytes(styleJSON),
-		glamour.WithWordWrap(0),
+		glamour.WithWordWrap(width),
 	)
-	if err == nil {
-		mdRenderer = r
+	if err != nil {
+		return nil
 	}
+	cachedRenderer = r
+	cachedWidth = width
+	return r
 }
 
 // renderMarkdown renders markdown text with ANSI styling.
+// Width should be the current terminal width (for correct table rendering).
 // Falls back to plain text if the renderer is unavailable.
-func renderMarkdown(text string) string {
-	if mdRenderer == nil || text == "" {
+func renderMarkdown(text string, width int) string {
+	r := getRenderer(width)
+	if r == nil || text == "" {
 		return text
 	}
-	out, err := mdRenderer.Render(text)
+	out, err := r.Render(text)
 	if err != nil {
 		return text
 	}

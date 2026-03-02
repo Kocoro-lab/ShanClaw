@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -126,11 +127,15 @@ func runOneShot(cfg *config.Config, query string) error {
 		loop.SetMCPContext(mcpCtx)
 	}
 	result, usage, err := loop.Run(context.Background(), query, nil)
-	if err != nil {
+	if err != nil && !errors.Is(err, agent.ErrMaxIterReached) {
 		return err
 	}
 	fmt.Print(renderMarkdown(result))
-	fmt.Printf("\n[tokens: %d | cost: $%.4f]\n", usage.TotalTokens, usage.CostUSD)
+	usageLine := fmt.Sprintf("\n[tokens: %d | cost: $%.4f", usage.TotalTokens, usage.CostUSD)
+	if usage.Model != "" {
+		usageLine += " | model: " + usage.Model
+	}
+	fmt.Println(usageLine + "]")
 	return nil
 }
 

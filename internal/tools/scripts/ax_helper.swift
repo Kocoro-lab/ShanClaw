@@ -258,10 +258,7 @@ guard let input = try? JSONDecoder().decode(Input.self, from: inputData) else {
     exit(1)
 }
 
-let checkRef = AXUIElementCreateSystemWide()
-var checkVal: CFTypeRef?
-let checkErr = AXUIElementCopyAttributeValue(checkRef, "AXFocusedApplication" as CFString, &checkVal)
-if checkErr == .cannotComplete || checkErr == .notImplemented {
+if !AXIsProcessTrusted() {
     outputJSON(ErrorOutput(error: "Accessibility permission not granted. Enable in: System Settings > Privacy & Security > Accessibility. Add your terminal app."))
     exit(1)
 }

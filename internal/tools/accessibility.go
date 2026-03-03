@@ -86,6 +86,7 @@ func (t *AccessibilityTool) Run(ctx context.Context, argsJSON string) (agent.Too
 }
 
 func scriptPath() (string, error) {
+	// 1. Next to the shan binary (tar.gz release)
 	exe, err := os.Executable()
 	if err == nil {
 		dir := filepath.Dir(exe)
@@ -93,7 +94,13 @@ func scriptPath() (string, error) {
 		if _, err := os.Stat(p); err == nil {
 			return p, nil
 		}
+		// 2. Homebrew: binary in bin/, script in ../lib/shan/scripts/
+		p = filepath.Join(dir, "..", "lib", "shan", "scripts", "ax_helper.swift")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
 	}
+	// 3. Development: relative to working directory
 	p := filepath.Join("internal", "tools", "scripts", "ax_helper.swift")
 	if _, err := os.Stat(p); err == nil {
 		return p, nil

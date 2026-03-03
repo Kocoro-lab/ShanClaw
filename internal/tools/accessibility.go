@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -25,12 +27,12 @@ type AccessibilityTool struct {
 }
 
 type accessibilityArgs struct {
-	Action   string `json:"action"`
-	App      string `json:"app,omitempty"`
-	MaxDepth int    `json:"max_depth,omitempty"`
-	Filter   string `json:"filter,omitempty"`
-	Ref      string `json:"ref,omitempty"`
-	Value    string `json:"value,omitempty"`
+	Action   string  `json:"action"`
+	App      string  `json:"app,omitempty"`
+	MaxDepth int     `json:"max_depth,omitempty"`
+	Filter   string  `json:"filter,omitempty"`
+	Ref      string  `json:"ref,omitempty"`
+	Value    *string `json:"value,omitempty"`
 }
 
 func (t *AccessibilityTool) Info() agent.ToolInfo {
@@ -75,6 +77,7 @@ func (t *AccessibilityTool) Run(ctx context.Context, argsJSON string) (agent.Too
 		return t.performAction(ctx, args.Action, args.Ref)
 	case "set_value":
 		return t.setValue(ctx, args.Ref, args.Value)
+
 	case "get_value":
 		return t.getValue(ctx, args.Ref)
 	default:
@@ -121,22 +124,30 @@ func (t *AccessibilityTool) runSwift(ctx context.Context, input map[string]any) 
 
 	cmd := exec.CommandContext(ctx, "swift", path)
 	cmd.Stdin = strings.NewReader(string(inputJSON))
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("swift error: %v\n%s", err, string(output))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("swift error: %v\n%s", err, stderr.String())
 	}
 
 	var result map[string]any
-	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, fmt.Errorf("parse swift output: %v\nraw: %s", err, string(output))
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		return nil, fmt.Errorf("parse swift output: %v\nraw: %s", err, stdout.String())
 	}
 
 	return result, nil
 }
 
+// validAppName checks that an app name contains only safe characters.
+var validAppNamePattern = regexp.MustCompile(`^[a-zA-Z0-9 ._\-()]+$`)
+
 func (t *AccessibilityTool) resolvePID(ctx context.Context, appName string) (int, error) {
 	if appName == "" {
 		return 0, nil
+	}
+	if !validAppNamePattern.MatchString(appName) {
+		return 0, fmt.Errorf("invalid app name %q — only letters, numbers, spaces, dots, hyphens, underscores, and parentheses allowed", appName)
 	}
 	script := fmt.Sprintf(`tell application "System Events" to unix id of process "%s"`, appName)
 	out, err := exec.CommandContext(ctx, "osascript", "-e", script).CombinedOutput()
@@ -189,9 +200,11 @@ func (t *AccessibilityTool) readTree(ctx context.Context, args accessibilityArgs
 	t.lastPID = resultPID
 
 	if paths, ok := result["ref_paths"].(map[string]any); ok {
-		for ref, pathVal := range paths {
-			if p, ok := pathVal.(string); ok {
-				t.refs[ref] = refEntry{path: p, pid: resultPID}
+		for ref, val := range paths {
+			if entry, ok := val.(map[string]any); ok {
+				p, _ := entry["path"].(string)
+				r, _ := entry["role"].(string)
+				t.refs[ref] = refEntry{path: p, role: r, pid: resultPID}
 			}
 		}
 	}
@@ -201,8 +214,26 @@ func (t *AccessibilityTool) readTree(ctx context.Context, args accessibilityArgs
 	outputJSON, _ := json.MarshalIndent(result, "", "  ")
 	content := string(outputJSON)
 
+	// If output is too large, trim elements array and re-serialize valid JSON
 	if len(content) > 8000 {
-		content = content[:8000] + "\n... (truncated, use filter='interactive' or lower max_depth)"
+		if elems, ok := result["elements"].([]any); ok {
+			// Binary search for element count that fits
+			lo, hi := 0, len(elems)
+			for lo < hi {
+				mid := (lo + hi + 1) / 2
+				result["elements"] = elems[:mid]
+				trial, _ := json.MarshalIndent(result, "", "  ")
+				if len(trial) <= 7800 { // leave room for truncation notice
+					lo = mid
+				} else {
+					hi = mid - 1
+				}
+			}
+			result["elements"] = elems[:lo]
+			result["truncated"] = fmt.Sprintf("showing %d of %d elements — use filter='interactive' or lower max_depth", lo, len(elems))
+			outputJSON, _ = json.MarshalIndent(result, "", "  ")
+			content = string(outputJSON)
+		}
 	}
 
 	return agent.ToolResult{Content: content}, nil
@@ -250,12 +281,12 @@ func (t *AccessibilityTool) performAction(ctx context.Context, action string, re
 	return agent.ToolResult{Content: msg}, nil
 }
 
-func (t *AccessibilityTool) setValue(ctx context.Context, ref string, value string) (agent.ToolResult, error) {
+func (t *AccessibilityTool) setValue(ctx context.Context, ref string, value *string) (agent.ToolResult, error) {
 	entry, err := t.lookupRef(ref)
 	if err != nil {
 		return agent.ToolResult{Content: err.Error(), IsError: true}, nil
 	}
-	if value == "" {
+	if value == nil {
 		return agent.ToolResult{Content: "set_value requires 'value' parameter", IsError: true}, nil
 	}
 
@@ -263,7 +294,7 @@ func (t *AccessibilityTool) setValue(ctx context.Context, ref string, value stri
 		"action": "set_value",
 		"pid":    entry.pid,
 		"path":   entry.path,
-		"value":  value,
+		"value":  *value,
 	}
 	if entry.role != "" {
 		input["expected_role"] = entry.role

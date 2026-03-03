@@ -29,7 +29,7 @@ struct ReadTreeOutput: Encodable {
     let pid: Int
     let window: String
     let elements: [Element]
-    let ref_paths: [String: String]
+    let ref_paths: [String: [String: String]]
 }
 
 struct ActionOutput: Encodable {
@@ -69,7 +69,7 @@ let interactiveRoles: Set<String> = [
 ]
 
 var refCounter = 0
-var refPaths: [String: String] = [:]
+var refPaths: [String: [String: String]] = [:]
 
 func walkTree(_ el: AXUIElement, depth: Int, maxDepth: Int, filter: String, path: String) -> Element? {
     guard depth <= maxDepth else { return nil }
@@ -110,7 +110,7 @@ func walkTree(_ el: AXUIElement, depth: Int, maxDepth: Int, filter: String, path
 
     refCounter += 1
     let ref = "e\(refCounter)"
-    refPaths[ref] = path
+    refPaths[ref] = ["path": path, "role": role]
 
     var elem = Element(ref: ref, role: role)
     if let s = subrole, !s.isEmpty { elem.subrole = s }

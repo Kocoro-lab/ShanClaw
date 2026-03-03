@@ -137,7 +137,16 @@ shan -y "copy the current date to my clipboard"
 shan -y "read my clipboard and summarize the content"
 ```
 
-**Screenshot & Computer Use** — `screenshot`, `computer` (vision loop: act → screenshot → observe → decide)
+**GUI Interaction via Accessibility Tree** — `accessibility` (primary: read UI elements, click/type by ref)
+```bash
+shan -y "open Calendar and show me today's events"
+shan -y "open System Settings and check my display resolution"
+shan -y "open Finder to Downloads and list the files"
+shan -y "open TextEdit, create a new document, and type 'hello world'"
+shan -y "open Reminders and mark 'Buy groceries' as done"
+```
+
+**Screenshot & Computer Use** — `screenshot`, `computer` (vision fallback: act → screenshot → observe → decide)
 ```bash
 shan -y "take a screenshot and tell me what's on my screen"
 shan -y "open LINE app and bring it to the front"
@@ -170,6 +179,8 @@ shan "show all tables in the database"
 
 - **macOS** (clipboard, notifications, AppleScript, screencapture, Quartz mouse control)
 - **Shannon Gateway** at configurable endpoint (for LLM completions + remote tools)
+- **Swift toolchain** (Xcode CLI tools, for `accessibility` tool — present on all standard macOS installs)
+- **Accessibility permission** granted in System Settings > Privacy & Security > Accessibility (for `accessibility` tool)
 - **Python 3 + pyobjc-framework-Quartz** (optional, for `computer` tool mouse/click control)
 - **Chrome** (optional, for `browser` tool — chromedp with isolated profile)
 
@@ -239,11 +250,12 @@ Local tools executed on your macOS machine:
 
 | Tool | Approval | Description |
 |------|----------|-------------|
+| `accessibility` | Yes | **Primary GUI tool.** Reads macOS accessibility tree (AXUIElement), interact by ref: `read_tree`, `click`, `press`, `set_value`, `get_value`. Works with Finder, Safari, TextEdit, Calendar, System Settings, etc. |
 | `clipboard` | Yes | Read/write system clipboard (pbcopy/pbpaste) |
 | `notify` | Yes | macOS desktop notifications via osascript |
-| `applescript` | Yes | Execute arbitrary AppleScript (auto-screenshots after execution) |
-| `screenshot` | Yes | Screen capture (fullscreen/window/region), resized and base64-encoded for LLM vision |
-| `computer` | Yes | OS-level mouse/keyboard with Anthropic `computer_20251124` schema (auto-screenshots after each action, coordinate scaling for retina) |
+| `applescript` | Yes | Execute arbitrary AppleScript. Use for operations with no AX equivalent (e.g., "tell Finder to empty trash") |
+| `screenshot` | Yes | Screen capture (fullscreen/window/region). Visual fallback when accessibility tree is insufficient |
+| `computer` | Yes | Coordinate-based mouse/keyboard. Fallback when accessibility refs don't work or for drag operations |
 | `browser` | Yes | Chromedp with isolated Chrome profile (navigate/click/type/screenshot/read_page/execute_js/wait/close) |
 
 ### Tool Approval Flow

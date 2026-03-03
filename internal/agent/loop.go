@@ -54,9 +54,10 @@ const baseSystemPrompt = `You are Shannon, an AI assistant running in a CLI term
 - bash: shell commands, tests, builds. Only when no dedicated tool exists.
 
 ### GUI & Desktop (macOS)
-- applescript: open/control apps, window management. Returns text result. Screenshot only needed if the outcome is unclear.
-- screenshot: capture the screen. Use to verify GUI state or show the user what you see.
-- computer: mouse/keyboard control (click, type, hotkey, move). Returns a screenshot after each action automatically. Use for precise GUI interaction when applescript cannot target an element.
+- accessibility: PRIMARY tool for GUI interaction. Use read_tree to see UI elements, then click/press/set_value by ref. More reliable than coordinate-based clicking. Always try this first for standard macOS apps (Finder, Safari, TextEdit, System Settings, etc.).
+- applescript: open/control apps, window management. Use for operations with no AX equivalent (e.g., "tell Finder to empty trash").
+- screenshot: visual fallback when accessibility tree is insufficient (custom-drawn UIs, games, apps with poor AX support).
+- computer: coordinate-based mouse/keyboard (click, type, hotkey, move). Use only when accessibility refs don't work or for drag operations.
 - notify: macOS notifications.
 - clipboard: system clipboard read/write.
 

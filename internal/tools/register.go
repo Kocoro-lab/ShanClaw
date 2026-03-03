@@ -40,6 +40,7 @@ func RegisterLocalTools(cfg *config.Config) (*agent.ToolRegistry, func()) {
 	reg.Register(&NotifyTool{})
 	reg.Register(&ProcessTool{})
 	reg.Register(&AppleScriptTool{})
+	reg.Register(&AccessibilityTool{})
 
 	browser := &BrowserTool{}
 	reg.Register(browser)

@@ -11,8 +11,12 @@ import (
 // ToolFamilies maps tool names to their logical family for grouping
 // related tools in loop detection (e.g., web_search + web_fetch = "web").
 var ToolFamilies = map[string]string{
-	"web_search": "web",
-	"web_fetch":  "web",
+	"web_search":    "web",
+	"web_fetch":     "web",
+	"accessibility": "gui",
+	"screenshot":    "gui",
+	"computer":      "gui",
+	"applescript":   "gui",
 }
 
 // fillerWords are common query padding that don't affect semantic meaning.

@@ -17,6 +17,10 @@ builds:
 archives:
   - format: tar.gz
     name_template: "shan_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - src: internal/tools/scripts/ax_helper.swift
+        dst: scripts
+        strip_parent: true
 
 checksum:
   name_template: "checksums.txt"
@@ -38,6 +42,7 @@ brews:
     description: "AI-powered CLI agent with local tools, permissions, and session management"
     install: |
       bin.install "shan"
+      (lib/"shan"/"scripts").install "scripts/ax_helper.swift"
 
 release:
   github:

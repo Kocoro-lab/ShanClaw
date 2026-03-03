@@ -51,7 +51,7 @@ type LoopDetector struct {
 // GUITools are tools that indicate GUI automation tasks.
 // Used by both LoopDetector (exempt from NoProgress) and effectiveMaxIter (higher limit).
 var GUITools = map[string]bool{
-	"screenshot": true, "computer": true, "applescript": true, "browser": true,
+	"screenshot": true, "computer": true, "applescript": true, "browser": true, "accessibility": true,
 }
 
 // NewLoopDetector creates a detector with production defaults.

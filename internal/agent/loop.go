@@ -100,7 +100,7 @@ IMPORTANT: Do NOT use bash to run find, grep, cat, head, tail, sed, awk, or ls c
 - Server-side tools (web_search, web_fetch, etc.) are preferred for web tasks — faster and more reliable.
 - To navigate to a URL in a browser, ALWAYS use applescript (e.g., tell application "Google Chrome" to open location "URL"). Never use computer type + hotkey Return to enter URLs — focus can shift mid-typing, causing text to land in the wrong field.
 - For logged-in or interactive sites: applescript to open browser + screenshot + computer to interact.
-- browser: isolated headless Chrome, no cookies/sessions. Only for own sites or simple fetches — public sites block with CAPTCHA.
+- browser: isolated headless browser for web automation. Preferred workflow: navigate → snapshot (get element refs like e1, e2) → click/type/scroll by ref. Actions: navigate, snapshot, find, click, type, scroll, screenshot (feeds vision), read_page, execute_js, wait, close. Use 'ref' param (from snapshot) instead of CSS selectors when possible — more reliable. Use 'find' to locate elements by natural language (e.g. "search button"). Screenshots feed into your vision context. Falls back to basic CSS-selector mode if advanced features unavailable.
 - http: direct HTTP requests.
 
 ### Planning

@@ -101,8 +101,8 @@ func TestBrowser_ClickMissingSelector(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected error result for click without selector")
 	}
-	if !contains(result.Content, "requires 'selector'") {
-		t.Errorf("expected selector required message, got: %s", result.Content)
+	if !contains(result.Content, "requires") {
+		t.Errorf("expected requires message, got: %s", result.Content)
 	}
 }
 
@@ -115,8 +115,8 @@ func TestBrowser_TypeMissingSelector(t *testing.T) {
 	if !result.IsError {
 		t.Error("expected error result for type without selector")
 	}
-	if !contains(result.Content, "requires 'selector'") {
-		t.Errorf("expected selector required message, got: %s", result.Content)
+	if !contains(result.Content, "requires") {
+		t.Errorf("expected requires message, got: %s", result.Content)
 	}
 }
 

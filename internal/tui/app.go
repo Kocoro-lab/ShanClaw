@@ -246,9 +246,7 @@ func New(cfg *config.Config, version string) *Model {
 			}
 			reg.Register(tools.NewMCPTool(t.ServerName, t.Tool, mcpMgr))
 		}
-		if len(mcpTools) > 0 {
-			fmt.Fprintf(os.Stderr, "MCP: %d tools from %d servers\n", len(mcpTools), len(cfg.MCPServers))
-		}
+		_ = len(mcpTools)
 	}
 
 	origCleanup := toolCleanup

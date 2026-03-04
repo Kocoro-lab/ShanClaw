@@ -1,14 +1,14 @@
 package update
 
 import (
-	"os"
+	"path/filepath"
 	"strings"
 )
 
 // IsHomebrewPath returns true if the binary path indicates a Homebrew installation.
-// Resolves symlinks first (e.g. /usr/local/bin/shan → /usr/local/Cellar/shan/…).
+// Fully resolves symlink chains (e.g. /usr/local/bin/shan → /usr/local/Cellar/shan/…).
 func IsHomebrewPath(path string) bool {
-	if resolved, err := os.Readlink(path); err == nil {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		path = resolved
 	}
 	return strings.Contains(path, "/Cellar/") ||

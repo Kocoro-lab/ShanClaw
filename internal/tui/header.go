@@ -90,7 +90,8 @@ func renderStartupHeader(frame int, width int, version string, modelTier string,
 	modelStyle := lipgloss.NewStyle().Foreground(accentColor).Bold(true)
 	cwdStyle := lipgloss.NewStyle().Foreground(dimColor)
 	epStyle := lipgloss.NewStyle().Foreground(dimColor)
-	leftLines = append(leftLines, "  "+modelStyle.Render(modelTier))
+	versionStyle := lipgloss.NewStyle().Foreground(dimColor)
+	leftLines = append(leftLines, "  "+modelStyle.Render(modelTier)+"  "+versionStyle.Render("v"+version))
 	leftLines = append(leftLines, "  "+cwdStyle.Render(truncateStr(cwd, headerLeftWidth-4)))
 	leftLines = append(leftLines, "  "+epStyle.Render(truncateStr(endpoint, headerLeftWidth-4)))
 

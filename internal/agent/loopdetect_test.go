@@ -378,6 +378,89 @@ func TestLoopDetector_RealWorldWebLoop(t *testing.T) {
 
 // TestLoopDetector_RealWorldWebLoop_CrossTool verifies that switching from
 // web_search to web_fetch doesn't reset the family counter.
+func TestLoopDetector_ToolModeSwitch_NudgeOnGUIAfterSuccess(t *testing.T) {
+	ld := NewLoopDetector()
+
+	// Successful non-GUI call followed by GUI call → nudge
+	ld.Record("applescript", `{"script":"create event"}`, false, "", "")
+	action, _ := ld.Check("applescript")
+	if action != LoopContinue {
+		t.Errorf("single successful call should continue, got %v", action)
+	}
+
+	ld.Record("screenshot", `{"target":"screen"}`, false, "", "")
+	action, msg := ld.Check("screenshot")
+	if action != LoopNudge {
+		t.Errorf("GUI call after successful non-GUI should nudge, got %v", action)
+	}
+	if msg == "" {
+		t.Error("nudge should have a message")
+	}
+}
+
+func TestLoopDetector_ToolModeSwitch_NoNudgeAfterError(t *testing.T) {
+	ld := NewLoopDetector()
+
+	// Failed non-GUI call followed by GUI call → no nudge (GUI verification warranted)
+	ld.Record("applescript", `{"script":"create event"}`, true, "calendar not found", "")
+	ld.Record("screenshot", `{"target":"screen"}`, false, "", "")
+	action, _ := ld.Check("screenshot")
+	if action != LoopContinue {
+		t.Errorf("GUI after failed non-GUI should continue (verification warranted), got %v", action)
+	}
+}
+
+func TestLoopDetector_ToolModeSwitch_NoNudgeForGUIOnlyTask(t *testing.T) {
+	ld := NewLoopDetector()
+
+	// Task starts with GUI tools — no non-GUI success to trigger on
+	ld.Record("screenshot", `{"target":"screen"}`, false, "", "")
+	ld.Record("computer", `{"action":"click","coordinate":[100,200]}`, false, "", "")
+	ld.Record("screenshot", `{"target":"screen"}`, false, "", "")
+	action, _ := ld.Check("screenshot")
+	if action != LoopContinue {
+		t.Errorf("GUI-only task should not trigger mode switch, got %v", action)
+	}
+}
+
+func TestLoopDetector_ToolModeSwitch_NudgeOnlyOnce(t *testing.T) {
+	ld := NewLoopDetector()
+
+	// Successful non-GUI → GUI nudge → second GUI should NOT nudge again
+	ld.Record("applescript", `{"script":"create event"}`, false, "", "")
+	ld.Record("screenshot", `{"target":"screen"}`, false, "", "")
+	action, _ := ld.Check("screenshot")
+	if action != LoopNudge {
+		t.Errorf("first GUI after success should nudge, got %v", action)
+	}
+
+	ld.Record("computer", `{"action":"click","coordinate":[100,200]}`, false, "", "")
+	action, _ = ld.Check("computer")
+	if action != LoopContinue {
+		t.Errorf("second GUI should not re-nudge (already nudged), got %v", action)
+	}
+}
+
+func TestLoopDetector_ToolModeSwitch_ResetsOnNewNonGUI(t *testing.T) {
+	ld := NewLoopDetector()
+
+	// Success → GUI nudge → new non-GUI success → GUI nudge again (new mode switch)
+	ld.Record("applescript", `{"script":"create event"}`, false, "", "")
+	ld.Record("screenshot", `{"target":"screen"}`, false, "", "")
+	action, _ := ld.Check("screenshot")
+	if action != LoopNudge {
+		t.Errorf("first mode switch should nudge, got %v", action)
+	}
+
+	// New non-GUI success resets the detector
+	ld.Record("bash", `{"command":"echo hello"}`, false, "", "")
+	ld.Record("screenshot", `{"target":"screen"}`, false, "", "")
+	action, _ = ld.Check("screenshot")
+	if action != LoopNudge {
+		t.Errorf("new mode switch after reset should nudge again, got %v", action)
+	}
+}
+
 func TestLoopDetector_RealWorldWebLoop_CrossTool(t *testing.T) {
 	ld := NewLoopDetector()
 

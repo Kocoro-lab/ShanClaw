@@ -13,7 +13,7 @@ brew install Kocoro-lab/tap/shan
 ### Option B: npm
 
 ```bash
-npm install -g shan-cli
+npm install -g @waylandzhang/shan
 ```
 
 ### Option C: Install Script

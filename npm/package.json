@@ -1,5 +1,5 @@
 {
-  "name": "shan-cli",
+  "name": "@waylandzhang/shan",
   "version": "0.1.2",
   "description": "AI-powered CLI agent with local tools, permissions, and session management",
   "bin": {

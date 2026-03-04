@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1110,4 +1111,345 @@ func TestAgentLoop_NativeBlocks_ImageResult(t *testing.T) {
 		}
 	}
 	t.Error("expected tool_result block with image for image_tool")
+}
+
+// --- Parallel tool execution tests ---
+
+// mockSlowTool sleeps for a configurable duration and tracks concurrent executions.
+type mockSlowTool struct {
+	name     string
+	delay    time.Duration
+	maxConc  *atomic.Int32 // tracks peak concurrency
+	curConc  *atomic.Int32
+}
+
+func newMockSlowTool(name string, delay time.Duration) *mockSlowTool {
+	return &mockSlowTool{
+		name:    name,
+		delay:   delay,
+		maxConc: &atomic.Int32{},
+		curConc: &atomic.Int32{},
+	}
+}
+
+func (m *mockSlowTool) Info() ToolInfo {
+	return ToolInfo{
+		Name:        m.name,
+		Description: "slow mock tool",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+}
+
+func (m *mockSlowTool) Run(ctx context.Context, args string) (ToolResult, error) {
+	cur := m.curConc.Add(1)
+	// Update max concurrency if current is higher
+	for {
+		old := m.maxConc.Load()
+		if cur <= old || m.maxConc.CompareAndSwap(old, cur) {
+			break
+		}
+	}
+	time.Sleep(m.delay)
+	m.curConc.Add(-1)
+	return ToolResult{Content: fmt.Sprintf("result from %s", m.name)}, nil
+}
+
+func (m *mockSlowTool) RequiresApproval() bool { return false }
+
+// mockPanicTool panics during Run.
+type mockPanicTool struct {
+	name string
+}
+
+func (m *mockPanicTool) Info() ToolInfo {
+	return ToolInfo{
+		Name:        m.name,
+		Description: "panicking mock tool",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+}
+
+func (m *mockPanicTool) Run(ctx context.Context, args string) (ToolResult, error) {
+	panic("intentional test panic")
+}
+
+func (m *mockPanicTool) RequiresApproval() bool { return false }
+
+// multiToolResponse builds a response with multiple tool calls (all with IDs for native path).
+func multiToolResponse(content string, calls []client.FunctionCall, inputTokens, outputTokens int) client.CompletionResponse {
+	return client.CompletionResponse{
+		Model:        "test-model",
+		OutputText:   content,
+		FinishReason: "tool_use",
+		ToolCalls:    calls,
+		Usage: client.Usage{
+			InputTokens:  inputTokens,
+			OutputTokens: outputTokens,
+			TotalTokens:  inputTokens + outputTokens,
+		},
+		RequestID: "req-test",
+	}
+}
+
+func TestAgentLoop_ParallelToolExecution(t *testing.T) {
+	toolA := newMockSlowTool("tool_a", 100*time.Millisecond)
+	toolB := newMockSlowTool("tool_b", 100*time.Millisecond)
+	toolC := newMockSlowTool("tool_c", 100*time.Millisecond)
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			// Return 3 tool calls in a single response
+			json.NewEncoder(w).Encode(multiToolResponse("", []client.FunctionCall{
+				{ID: "id_a", Name: "tool_a", Arguments: json.RawMessage(`{"key":"a"}`)},
+				{ID: "id_b", Name: "tool_b", Arguments: json.RawMessage(`{"key":"b"}`)},
+				{ID: "id_c", Name: "tool_c", Arguments: json.RawMessage(`{"key":"c"}`)},
+			}, 10, 5))
+		} else {
+			json.NewEncoder(w).Encode(nativeResponse("All done.", "end_turn", nil, 10, 5))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(toolA)
+	reg.Register(toolB)
+	reg.Register(toolC)
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+
+	start := time.Now()
+	result, _, err := loop.Run(context.Background(), "run all tools", nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "All done." {
+		t.Errorf("expected 'All done.', got %q", result)
+	}
+
+	// If sequential, 3 * 100ms = ~300ms. If parallel, ~100ms.
+	// Use 250ms as threshold with margin for CI slowness.
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("parallel execution took %v, expected < 250ms (3 x 100ms tools)", elapsed)
+	}
+}
+
+func TestAgentLoop_ParallelToolExecution_ResultOrdering(t *testing.T) {
+	var lastMessages []client.Message
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var req client.CompletionRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		lastMessages = req.Messages
+		if callCount == 1 {
+			json.NewEncoder(w).Encode(multiToolResponse("", []client.FunctionCall{
+				{ID: "id_1", Name: "tool_a", Arguments: json.RawMessage(`{"order":"first"}`)},
+				{ID: "id_2", Name: "tool_b", Arguments: json.RawMessage(`{"order":"second"}`)},
+				{ID: "id_3", Name: "tool_c", Arguments: json.RawMessage(`{"order":"third"}`)},
+			}, 10, 5))
+		} else {
+			json.NewEncoder(w).Encode(nativeResponse("Done.", "end_turn", nil, 10, 5))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	// Tools with different delays — results should still be in original order
+	reg.Register(newMockSlowTool("tool_a", 80*time.Millisecond))
+	reg.Register(newMockSlowTool("tool_b", 10*time.Millisecond))
+	reg.Register(newMockSlowTool("tool_c", 50*time.Millisecond))
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+
+	_, _, err := loop.Run(context.Background(), "run ordered tools", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify tool_result blocks are in order: id_1, id_2, id_3
+	var resultIDs []string
+	for _, msg := range lastMessages {
+		if !msg.Content.HasBlocks() {
+			continue
+		}
+		for _, b := range msg.Content.Blocks() {
+			if b.Type == "tool_result" {
+				resultIDs = append(resultIDs, b.ToolUseID)
+			}
+		}
+	}
+	expectedOrder := []string{"id_1", "id_2", "id_3"}
+	if len(resultIDs) != len(expectedOrder) {
+		t.Fatalf("expected %d tool_result blocks, got %d: %v", len(expectedOrder), len(resultIDs), resultIDs)
+	}
+	for i, id := range expectedOrder {
+		if resultIDs[i] != id {
+			t.Errorf("result[%d]: expected tool_use_id=%q, got %q", i, id, resultIDs[i])
+		}
+	}
+}
+
+func TestAgentLoop_ParallelToolExecution_PanicRecovery(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			json.NewEncoder(w).Encode(multiToolResponse("", []client.FunctionCall{
+				{ID: "id_ok", Name: "tool_ok", Arguments: json.RawMessage(`{}`)},
+				{ID: "id_panic", Name: "tool_panic", Arguments: json.RawMessage(`{}`)},
+			}, 10, 5))
+		} else {
+			json.NewEncoder(w).Encode(nativeResponse("Handled panic.", "end_turn", nil, 10, 5))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(&mockTool{name: "tool_ok"})
+	reg.Register(&mockPanicTool{name: "tool_panic"})
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+
+	result, _, err := loop.Run(context.Background(), "run with panic", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Handled panic." {
+		t.Errorf("expected 'Handled panic.', got %q", result)
+	}
+}
+
+func TestAgentLoop_SingleToolCall_NoGoroutine(t *testing.T) {
+	// Verify single tool call works correctly (no goroutine overhead path)
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			json.NewEncoder(w).Encode(nativeResponseWithID("", "tool_use",
+				toolCallWithID("mock_tool", `{"single":true}`, "toolu_single"), 10, 5))
+		} else {
+			json.NewEncoder(w).Encode(nativeResponse("Single tool done.", "end_turn", nil, 10, 5))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(&mockTool{name: "mock_tool"})
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+
+	result, _, err := loop.Run(context.Background(), "single tool", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Single tool done." {
+		t.Errorf("expected 'Single tool done.', got %q", result)
+	}
+}
+
+func TestAgentLoop_ParallelToolExecution_MixedDeniedAndApproved(t *testing.T) {
+	var lastMessages []client.Message
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var req client.CompletionRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		lastMessages = req.Messages
+		if callCount == 1 {
+			// Mix of: known tool, unknown tool, tool requiring approval (denied)
+			json.NewEncoder(w).Encode(multiToolResponse("", []client.FunctionCall{
+				{ID: "id_ok", Name: "mock_tool", Arguments: json.RawMessage(`{}`)},
+				{ID: "id_unknown", Name: "nonexistent_tool", Arguments: json.RawMessage(`{}`)},
+				{ID: "id_denied", Name: "guarded_tool", Arguments: json.RawMessage(`{"cmd":"rm -rf /"}`)},
+			}, 10, 5))
+		} else {
+			json.NewEncoder(w).Encode(nativeResponse("Mixed results.", "end_turn", nil, 10, 5))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(&mockTool{name: "mock_tool"})
+	reg.Register(&mockApprovalTool{
+		name:     "guarded_tool",
+		safeArgs: func(args string) bool { return false },
+	})
+	handler := &mockHandler{approveResult: false}
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+	loop.SetHandler(handler)
+
+	result, _, err := loop.Run(context.Background(), "mixed tools", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "Mixed results." {
+		t.Errorf("expected 'Mixed results.', got %q", result)
+	}
+
+	// Verify all 3 tool_result blocks exist with correct error states
+	var results []struct {
+		id      string
+		isError bool
+	}
+	for _, msg := range lastMessages {
+		if !msg.Content.HasBlocks() {
+			continue
+		}
+		for _, b := range msg.Content.Blocks() {
+			if b.Type == "tool_result" {
+				results = append(results, struct {
+					id      string
+					isError bool
+				}{b.ToolUseID, b.IsError})
+			}
+		}
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("expected 3 tool_result blocks, got %d", len(results))
+	}
+	// id_ok should succeed
+	if results[0].id != "id_ok" || results[0].isError {
+		t.Errorf("expected id_ok to succeed, got id=%q isError=%v", results[0].id, results[0].isError)
+	}
+	// id_unknown should be error
+	if results[1].id != "id_unknown" || !results[1].isError {
+		t.Errorf("expected id_unknown to be error, got id=%q isError=%v", results[1].id, results[1].isError)
+	}
+	// id_denied should be error
+	if results[2].id != "id_denied" || !results[2].isError {
+		t.Errorf("expected id_denied to be error, got id=%q isError=%v", results[2].id, results[2].isError)
+	}
+}
+
+func TestToolExecResult_Struct(t *testing.T) {
+	// Verify the toolExecResult struct can hold results correctly
+	results := make([]toolExecResult, 3)
+
+	results[0] = toolExecResult{
+		result:  ToolResult{Content: "file contents", IsError: false},
+		elapsed: 50 * time.Millisecond,
+	}
+	results[1] = toolExecResult{
+		result:  ToolResult{Content: "search results", IsError: false},
+		elapsed: 120 * time.Millisecond,
+	}
+	results[2] = toolExecResult{
+		err: fmt.Errorf("network timeout"),
+	}
+
+	// Verify index-based access preserves ordering
+	if results[0].result.Content != "file contents" {
+		t.Errorf("results[0]: expected 'file contents', got %q", results[0].result.Content)
+	}
+	if results[1].result.Content != "search results" {
+		t.Errorf("results[1]: expected 'search results', got %q", results[1].result.Content)
+	}
+	if results[2].err == nil || results[2].err.Error() != "network timeout" {
+		t.Errorf("results[2]: expected 'network timeout' error, got %v", results[2].err)
+	}
 }

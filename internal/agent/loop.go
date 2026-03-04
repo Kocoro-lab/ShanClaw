@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Kocoro-lab/shan/internal/audit"
@@ -183,6 +184,21 @@ func (a *AgentLoop) SetBypassPermissions(bypass bool) {
 
 func (a *AgentLoop) SetEnableStreaming(enable bool) {
 	a.enableStreaming = enable
+}
+
+// toolExecResult holds the output of a single tool.Run() call.
+// Used to collect results from parallel tool execution.
+type toolExecResult struct {
+	result  ToolResult
+	elapsed time.Duration
+	err     error
+}
+
+// approvedToolCall tracks a tool call that passed permission checks and pre-hooks.
+type approvedToolCall struct {
+	index int                 // position in original toolCalls slice
+	fc    client.FunctionCall // the tool call
+	tool  Tool                // resolved tool
 }
 
 func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []client.Message) (string, *TurnUsage, error) {
@@ -398,36 +414,48 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		var worstAction LoopAction
 		var worstMsg string
 
-		for _, fc := range toolCalls {
+		// ---- Phase 1 (serial): permission checks, pre-hooks, OnToolCall events ----
+		// Builds list of approved tool calls. Denied/unknown results are stored
+		// in execResults at their original index so Phase 3 can emit everything in order.
+		type perCallMeta struct {
+			argsStr     string
+			decision    string
+			wasApproved bool
+			resolved    bool // true if already resolved (denied/unknown/hook-denied)
+		}
+		callMeta := make([]perCallMeta, len(toolCalls))
+		execResults := make([]toolExecResult, len(toolCalls))
+		var approved []approvedToolCall
+
+		for idx, fc := range toolCalls {
 			totalToolCalls++
 			toolsUsed[fc.Name]++
 			argsStr := fc.ArgumentsString()
+			callMeta[idx].argsStr = argsStr
 
 			if a.handler != nil {
 				a.handler.OnToolCall(fc.Name, argsStr)
 			}
 
-			// recordError is a helper to record error results in the appropriate format.
-			recordError := func(errMsg string) {
-				if useNative {
-					resultBlocks = append(resultBlocks, client.NewToolResultBlock(fc.ID, errMsg, true))
-				} else {
-					allResults.WriteString(formatToolExec(fc.Name, truncateStr(argsStr, a.argsTrunc), generateCallID(), errMsg, true))
-					allResults.WriteString("\n\n")
-				}
-			}
-
 			tool, ok := a.tools.Get(fc.Name)
 			if !ok {
-				recordError("unknown tool: " + fc.Name)
+				callMeta[idx].resolved = true
+				execResults[idx] = toolExecResult{
+					result: ToolResult{Content: "unknown tool: " + fc.Name, IsError: true},
+				}
 				continue
 			}
 
 			// Permission check
 			decision, wasApproved := a.checkPermissionAndApproval(fc.Name, argsStr, tool, resp.OutputText, approvalCache)
+			callMeta[idx].decision = decision
+			callMeta[idx].wasApproved = wasApproved
 			if decision == "deny" {
 				a.logAudit(fc.Name, argsStr, "tool call denied by permission policy", decision, false, 0)
-				recordError("tool call denied by permission policy")
+				callMeta[idx].resolved = true
+				execResults[idx] = toolExecResult{
+					result: ToolResult{Content: "tool call denied by permission policy", IsError: true},
+				}
 				if a.handler != nil {
 					a.handler.OnToolResult(fc.Name, argsStr, ToolResult{Content: "denied by policy", IsError: true}, 0)
 				}
@@ -435,7 +463,10 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			}
 			if decision == "ask" && !wasApproved {
 				a.logAudit(fc.Name, argsStr, "tool call denied by user", decision, false, 0)
-				recordError("tool call denied by user")
+				callMeta[idx].resolved = true
+				execResults[idx] = toolExecResult{
+					result: ToolResult{Content: "tool call denied by user", IsError: true},
+				}
 				if a.handler != nil {
 					a.handler.OnToolResult(fc.Name, argsStr, ToolResult{Content: "denied by user", IsError: true}, 0)
 				}
@@ -450,16 +481,79 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				}
 				if hookDecision == "deny" {
 					a.logAudit(fc.Name, argsStr, "tool call denied by hook: "+hookReason, "deny", false, 0)
-					recordError("tool call denied by hook: " + hookReason)
+					callMeta[idx].resolved = true
+					execResults[idx] = toolExecResult{
+						result: ToolResult{Content: "tool call denied by hook: " + hookReason, IsError: true},
+					}
 					continue
 				}
 			}
 
+			approved = append(approved, approvedToolCall{index: idx, fc: fc, tool: tool})
+		}
+
+		// ---- Phase 2 (parallel): execute approved tool.Run() calls concurrently ----
+		if len(approved) == 1 {
+			// Single tool call: run directly, no goroutine overhead
+			ac := approved[0]
 			startTime := time.Now()
-			result, runErr := tool.Run(ctx, argsStr)
-			elapsed := time.Since(startTime)
-			if runErr != nil {
-				result = ToolResult{Content: fmt.Sprintf("tool error: %v", runErr), IsError: true}
+			result, runErr := ac.tool.Run(ctx, callMeta[ac.index].argsStr)
+			execResults[ac.index] = toolExecResult{result: result, elapsed: time.Since(startTime), err: runErr}
+		} else if len(approved) > 1 {
+			var wg sync.WaitGroup
+			wg.Add(len(approved))
+			for _, ac := range approved {
+				go func(ac approvedToolCall) {
+					defer wg.Done()
+					defer func() {
+						if r := recover(); r != nil {
+							execResults[ac.index] = toolExecResult{
+								result: ToolResult{Content: fmt.Sprintf("tool panicked: %v", r), IsError: true},
+							}
+						}
+					}()
+					startTime := time.Now()
+					result, runErr := ac.tool.Run(ctx, callMeta[ac.index].argsStr)
+					execResults[ac.index] = toolExecResult{result: result, elapsed: time.Since(startTime), err: runErr}
+				}(ac)
+			}
+			wg.Wait()
+		}
+
+		// ---- Phase 3 (serial): post-hooks, audit, events, context recording, loop detection ----
+		// Iterate ALL tool calls in original order so results are recorded in the correct sequence.
+		for idx, fc := range toolCalls {
+			argsStr := callMeta[idx].argsStr
+			decision := callMeta[idx].decision
+			wasApproved := callMeta[idx].wasApproved
+
+			er := execResults[idx]
+			result := er.result
+			elapsed := er.elapsed
+
+			if callMeta[idx].resolved {
+				// Already resolved in Phase 1 (denied/unknown/hook-denied).
+				// Just record in context — audit and handler events were already fired.
+			} else {
+				// Executed in Phase 2 — run post-processing.
+				if er.err != nil {
+					result = ToolResult{Content: fmt.Sprintf("tool error: %v", er.err), IsError: true}
+				}
+
+				// Skip sanitizeResult for image results (base64 data is intentional)
+				if len(result.Images) == 0 {
+					result.Content = sanitizeResult(result.Content)
+				}
+
+				if a.hookRunner != nil {
+					_ = a.hookRunner.RunPostToolUse(ctx, fc.Name, argsStr, result.Content, "")
+				}
+
+				a.logAudit(fc.Name, argsStr, result.Content, decision, wasApproved, elapsed.Milliseconds())
+
+				if a.handler != nil {
+					a.handler.OnToolResult(fc.Name, argsStr, result, elapsed)
+				}
 			}
 
 			// Track successful file reads for read-before-edit enforcement
@@ -469,22 +563,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				}
 			}
 
-			// Skip sanitizeResult for image results (base64 data is intentional)
-			if len(result.Images) == 0 {
-				result.Content = sanitizeResult(result.Content)
-			}
-
-			if a.hookRunner != nil {
-				_ = a.hookRunner.RunPostToolUse(ctx, fc.Name, argsStr, result.Content, "")
-			}
-
-			a.logAudit(fc.Name, argsStr, result.Content, decision, wasApproved, elapsed.Milliseconds())
-
-			if a.handler != nil {
-				a.handler.OnToolResult(fc.Name, argsStr, result, elapsed)
-			}
-
-			// Record result in context
+			// Record result in context (both resolved and executed, in order)
 			cleanResult := stripLineNumbers(result.Content)
 			if useNative {
 				if len(result.Images) > 0 {
@@ -540,7 +619,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				worstMsg = msg
 			}
 			if action == LoopForceStop {
-				break // stop processing remaining tool calls
+				break // stop processing remaining tool results
 			}
 		}
 

@@ -67,6 +67,8 @@ var rootCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("agent %q: %w", agentName, err)
 			}
+			// Ensure agent sessions directory exists
+			os.MkdirAll(filepath.Join(config.ShannonDir(), "agents", agentName, "sessions"), 0700)
 		}
 
 		if len(args) > 0 {

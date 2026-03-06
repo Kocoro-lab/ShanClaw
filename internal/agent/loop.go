@@ -161,7 +161,9 @@ type AgentLoop struct {
 	thinking          *client.ThinkingConfig
 	reasoningEffort   string
 	temperature       float64
-	specificModel     string
+	specificModel   string
+	agentBasePrompt string
+	agentMemory     string
 }
 
 func NewAgentLoop(gw *client.GatewayClient, tools *ToolRegistry, modelTier string, shannonDir string, maxIter int, resultTrunc int, argsTrunc int, perms *permissions.PermissionsConfig, auditor *audit.AuditLogger, hookRunner *hooks.HookRunner) *AgentLoop {
@@ -224,6 +226,11 @@ func (a *AgentLoop) SetSpecificModel(model string) {
 	a.specificModel = model
 }
 
+func (a *AgentLoop) SetAgentOverride(basePrompt, memory string) {
+	a.agentBasePrompt = basePrompt
+	a.agentMemory = memory
+}
+
 func (a *AgentLoop) SetEnableStreaming(enable bool) {
 	a.enableStreaming = enable
 }
@@ -254,9 +261,18 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	memory, _ := instructions.LoadMemory(a.shannonDir, 200)
 	instrText, _ := instructions.LoadInstructions(a.shannonDir, ".", 4000)
 
+	basePrompt := baseSystemPrompt
+	if a.agentBasePrompt != "" {
+		basePrompt = a.agentBasePrompt
+	}
+	mem := memory
+	if a.agentMemory != "" {
+		mem = a.agentMemory
+	}
+
 	systemPrompt := prompt.BuildSystemPrompt(prompt.PromptOptions{
-		BasePrompt:   baseSystemPrompt,
-		Memory:       memory,
+		BasePrompt:   basePrompt,
+		Memory:       mem,
 		Instructions: instrText,
 		ToolNames:    toolNames,
 		MCPContext:   a.mcpContext,

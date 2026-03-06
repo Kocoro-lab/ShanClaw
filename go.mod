@@ -21,6 +21,7 @@ require (
 require (
 	code.gitea.io/sdk/gitea v0.22.1 // indirect
 	github.com/42wim/httpsig v1.2.3 // indirect
+	github.com/adhocore/gronx v1.19.6 // indirect
 	github.com/alecthomas/chroma/v2 v2.14.0 // indirect
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -51,6 +52,7 @@ require (
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect

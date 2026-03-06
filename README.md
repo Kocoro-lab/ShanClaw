@@ -1,6 +1,6 @@
 # Shannon CLI (`shan`)
 
-Interactive AI agent CLI powered by Shannon. Local tools for computer control, MCP client for third-party integrations (GitHub, Slack, databases, etc.), and remote research/swarm orchestration via the Gateway API. macOS focused.
+Interactive AI agent CLI powered by Shannon. Named agents with independent instructions/memory, local tools for computer control, MCP client for third-party integrations (GitHub, Slack, databases, etc.), daemon mode for channel messaging (Slack, Telegram, LINE), local scheduled tasks via launchd, and remote research/swarm orchestration via the Gateway API. macOS focused.
 
 ## Installation
 
@@ -93,6 +93,9 @@ shan
 
 # One-shot mode — ask a question and get an answer
 shan "who is wayland zhang"
+
+# Use a named agent
+shan --agent ops-bot "check production health"
 
 # Configure your endpoint and API key
 shan --setup
@@ -208,8 +211,11 @@ shan "show all tables in the database"
 shan                              # interactive TUI
 shan "who is wayland zhang"       # one-shot mode (prompts for tool approval)
 shan -y "query"                   # one-shot, auto-approve all tools
+shan --agent ops-bot "query"      # use a named agent
 shan --setup                      # configure endpoint + API key
 shan mcp serve                    # start MCP server over stdio
+shan daemon start                 # start channel messaging daemon
+shan schedule list                # manage local scheduled tasks
 ```
 
 ### Flags
@@ -217,6 +223,7 @@ shan mcp serve                    # start MCP server over stdio
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--yes` | `-y` | Auto-approve all tool calls in one-shot mode |
+| `--agent` | | Named agent to use (from `~/.shannon/agents/`) |
 | `--dangerously-skip-permissions` | | Skip all permission checks in interactive mode |
 | `--setup` | | Run interactive setup wizard |
 
@@ -239,6 +246,22 @@ Type `/` in the TUI to see the interactive command menu:
 | `/update` | Self-update from GitHub releases |
 | `/quit` | Exit |
 | `/<custom>` | Custom commands from `.shannon/commands/*.md` |
+
+### Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `shan mcp serve` | Start MCP server over stdio |
+| `shan daemon start` | Start channel messaging daemon |
+| `shan daemon stop` | Stop background daemon |
+| `shan daemon status` | Show daemon connection status |
+| `shan schedule create` | Create a scheduled task |
+| `shan schedule list` | List scheduled tasks |
+| `shan schedule update <id>` | Update a scheduled task |
+| `shan schedule remove <id>` | Remove a scheduled task |
+| `shan schedule enable <id>` | Enable a scheduled task |
+| `shan schedule disable <id>` | Disable a scheduled task |
+| `shan schedule sync` | Re-sync failed launchd plists |
 
 ## Local Tools
 
@@ -275,6 +298,15 @@ Local tools executed on your macOS machine:
 | `screenshot` | Yes | Screen capture (fullscreen/window/region). Visual fallback when accessibility tree is insufficient |
 | `computer` | Yes | Coordinate-based mouse/keyboard. Fallback when accessibility refs don't work or for drag operations |
 | `browser` | Yes | Chromedp with isolated Chrome profile (navigate/click/type/screenshot/read_page/execute_js/wait/close) |
+
+### Scheduling
+
+| Tool | Approval | Description |
+|------|----------|-------------|
+| `schedule_create` | Yes | Create a launchd-backed scheduled task |
+| `schedule_list` | No | List all scheduled tasks with sync status |
+| `schedule_update` | Yes | Update cron, prompt, or enabled state |
+| `schedule_remove` | Yes | Remove a scheduled task and unload plist |
 
 ### Tool Approval Flow
 
@@ -682,7 +714,7 @@ This creates a `/name` command in the TUI. `$ARGUMENTS` is replaced with whateve
 
 ## Sessions
 
-Conversations are persisted as JSON files in `~/.shannon/sessions/`.
+Conversations are persisted as JSON files in `~/.shannon/sessions/` (or `~/.shannon/agents/<name>/sessions/` for named agents).
 
 - Each session is a `<id>.json` file containing messages, metadata, and remote task IDs
 - Saved after each agent turn and on exit
@@ -694,6 +726,148 @@ Conversations are persisted as JSON files in `~/.shannon/sessions/`.
 /session resume 2026-02-23-a1b2c3      # by full ID
 /session new                           # start fresh
 ```
+
+## Named Agents
+
+Create independent agents with their own instructions and memory:
+
+```
+~/.shannon/agents/
+  ops-bot/
+    AGENT.md          # agent instructions (replaces default system prompt)
+    MEMORY.md         # agent-specific memory (persists across sessions)
+  code-reviewer/
+    AGENT.md
+    MEMORY.md
+```
+
+### Creating an Agent
+
+```bash
+mkdir -p ~/.shannon/agents/ops-bot
+cat > ~/.shannon/agents/ops-bot/AGENT.md << 'EOF'
+You are ops-bot, a production operations assistant.
+- Monitor health metrics and error rates
+- Summarize incidents concisely
+- Always recommend next steps
+EOF
+```
+
+### Using Agents
+
+```bash
+# One-shot mode
+shan --agent ops-bot "check error rate in prod"
+
+# Interactive TUI
+shan --agent ops-bot
+
+# In daemon mode, @mention routes to agents:
+# "@ops-bot check prod" → ops-bot agent
+# "@reviewer look at PR" → reviewer agent
+# "check prod" → default Shannon agent
+```
+
+### Agent Name Rules
+
+Names must match `^[a-z0-9][a-z0-9_-]{0,63}$` (lowercase alphanumeric, hyphens, underscores).
+
+### Agent-Scoped Sessions
+
+Each agent gets its own session directory at `~/.shannon/agents/<name>/sessions/`, keeping conversation histories separate.
+
+## Daemon (Channel Messaging)
+
+The daemon connects to Shannon Cloud via WebSocket to receive messages from Slack, Telegram, LINE, Discord, and other channels. Messages are processed locally using shan's agent loop and tools, then replies are sent back through Shannon Cloud.
+
+```bash
+shan daemon start           # foreground (logs to stdout)
+shan daemon stop            # stop background daemon
+shan daemon status          # show connection status
+```
+
+### Architecture
+
+```
+Shannon Cloud                          shan daemon (local macOS)
+┌─────────────────┐                   ┌──────────────────────┐
+│ Slack webhook    │                   │                      │
+│ Telegram webhook │──→ WebSocket ──→  │ Message router       │
+│ LINE webhook     │    (persistent)   │   ├─ @ops-bot → agent│
+│ Discord webhook  │                   │   ├─ @reviewer→ agent│
+│                  │◀── reply ───────  │   └─ default → agent │
+└─────────────────┘                   └──────────────────────┘
+```
+
+- **Channel registration and auth** are managed in Shannon Cloud (not in shan)
+- **All agents** can see all channels — routing is by `@mention`, not config
+- **Session continuity** per thread — conversation history maintained across messages
+- **Up to 5 concurrent agents** — bounded worker pool prevents resource exhaustion
+- **Auto-reconnect** with exponential backoff on connection loss
+- **Schedule mutation tools** (`schedule_create/update/remove`) are denied by default in daemon mode
+
+## Scheduled Tasks
+
+Run agents on a cron schedule using macOS launchd. Schedules persist across reboots.
+
+### CLI Management
+
+```bash
+shan schedule create --agent ops-bot --cron "0 9 * * *" --prompt "check production health"
+shan schedule create --cron "*/30 * * * *" --prompt "check disk usage"
+shan schedule list
+shan schedule update <id> --cron "0 8 * * 1-5" --prompt "weekday morning check"
+shan schedule enable <id>
+shan schedule disable <id>
+shan schedule remove <id>
+shan schedule sync            # re-sync failed/pending launchd plists
+```
+
+### Agent-Accessible Tools
+
+Agents can also manage schedules via tools:
+
+```bash
+shan "schedule a daily health check at 9am using ops-bot"
+# Agent calls schedule_create tool → generates launchd plist
+shan "what schedules are running?"
+# Agent calls schedule_list tool
+shan "cancel the morning health check"
+# Agent calls schedule_remove tool
+```
+
+| Tool | Approval | Description |
+|------|----------|-------------|
+| `schedule_create` | Yes | Create a new scheduled task |
+| `schedule_list` | No | List all scheduled tasks |
+| `schedule_update` | Yes | Update cron, prompt, or enabled state |
+| `schedule_remove` | Yes | Remove a scheduled task |
+
+### Cron Syntax
+
+Full 5-field cron expressions supported (via [gronx](https://github.com/adhocore/gronx)):
+
+```
+┌───── minute (0-59)
+│ ┌───── hour (0-23)
+│ │ ┌───── day of month (1-31)
+│ │ │ ┌───── month (1-12)
+│ │ │ │ ┌───── day of week (0-6, Sun=0)
+│ │ │ │ │
+* * * * *
+```
+
+Supports ranges (`1-5`), steps (`*/5`), lists (`1,3,5`), and combinations.
+
+### How It Works
+
+- **Source of truth:** `~/.shannon/schedules.json` (JSON index with sync status)
+- **Execution backend:** `~/Library/LaunchAgents/com.shannon.schedule.<id>.plist`
+- Each schedule runs `shan -y --agent <name> "<prompt>"` in one-shot mode
+- Logs written to `~/.shannon/logs/schedule-<id>.log`
+- Atomic file writes (temp + rename) and file locking prevent corruption
+- `SyncStatus` tracks whether launchd is in sync: `ok`, `pending`, or `failed`
+- `shan schedule sync` retries any failed plist operations
 
 ## SSE Event Handling
 
@@ -741,7 +915,9 @@ go vet ./...                 # lint
 
 - **Vision**: Screenshots are captured, resized (1200px max), and sent as base64 image content blocks to the LLM. The computer tool uses Anthropic's native `computer_20251124` schema with coordinate scaling for retina displays. Vision models may blend what they see with training knowledge — verify critical details.
 - **Streaming**: One-shot mode does not stream responses; it waits for the full LLM response before displaying.
-- **Windows/Linux**: Local tools (clipboard, notifications, AppleScript, screenshot, computer) are macOS-only.
+- **Windows/Linux**: Local tools (clipboard, notifications, AppleScript, screenshot, computer) and scheduled tasks (launchd) are macOS-only.
+- **Daemon**: Requires Shannon Cloud WebSocket endpoint (`wss://.../v1/ws/messages`) — not yet available. Session history is in-memory only (lost on daemon restart).
+- **Scheduled tasks**: launchd-only (macOS). Complex cron expressions (ranges, steps) fall back to `StartInterval` instead of `StartCalendarInterval`.
 
 ## License
 

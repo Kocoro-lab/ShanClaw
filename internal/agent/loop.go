@@ -614,6 +614,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 
 		// Deduplicate identical tool calls (same name + same arguments).
 		// The first occurrence executes; duplicates get a synthetic error result.
+		// Arguments are normalized (compact JSON) to handle whitespace/key-order variance.
 		seenCalls := make(map[string]bool, len(toolCalls))
 
 		for idx, fc := range toolCalls {
@@ -622,7 +623,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			argsStr := fc.ArgumentsString()
 			callMeta[idx].argsStr = argsStr
 
-			dedupKey := fc.Name + "\x00" + argsStr
+			dedupKey := fc.Name + "\x00" + normalizeJSON(fc.Arguments)
 			if seenCalls[dedupKey] {
 				callMeta[idx].resolved = true
 				execResults[idx] = toolExecResult{
@@ -1076,6 +1077,26 @@ func formatToolExec(toolName, args, callID, output string, isError bool) string 
 	}
 	return fmt.Sprintf("<tool_exec tool=%q call_id=%q>\n<input>%s</input>\n<output status=%q>%s</output>\n</tool_exec>",
 		toolName, callID, escapeToolXML(args), status, escapeToolXML(output))
+}
+
+// normalizeJSON re-marshals raw JSON to compact canonical form so that
+// semantically identical arguments with different whitespace or key order
+// produce the same string for dedup comparison.
+func normalizeJSON(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return "{}"
+	}
+
+	var v interface{}
+	if err := json.Unmarshal([]byte(trimmed), &v); err != nil {
+		return trimmed
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return trimmed
+	}
+	return string(b)
 }
 
 // hasNativeToolIDs returns true if ALL tool calls have IDs, indicating the

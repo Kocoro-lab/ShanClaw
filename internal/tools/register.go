@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/Kocoro-lab/shan/internal/agent"
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/mcp"
+	"github.com/Kocoro-lab/shan/internal/schedule"
 )
 
 // RegisterLocalTools registers only the local tools.
@@ -46,6 +48,19 @@ func RegisterLocalTools(cfg *config.Config) (*agent.ToolRegistry, func()) {
 	reg.Register(browser)
 	reg.Register(&ScreenshotTool{})
 	reg.Register(&ComputerTool{})
+
+	// Schedule tools
+	if shanDir := config.ShannonDir(); shanDir != "" {
+		home, _ := os.UserHomeDir()
+		plistDir := filepath.Join(home, "Library", "LaunchAgents")
+		schMgr := schedule.NewManager(
+			filepath.Join(shanDir, "schedules.json"),
+			plistDir,
+		)
+		for _, tool := range NewScheduleTools(schMgr) {
+			reg.Register(tool)
+		}
+	}
 
 	cleanup := func() {
 		browser.Cleanup()

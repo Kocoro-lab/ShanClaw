@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/glamour"
 
 	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/shan/internal/agents"
 	"github.com/Kocoro-lab/shan/internal/audit"
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
@@ -30,6 +31,7 @@ var Version = "dev"
 var autoApprove = false
 var runSetup = false
 var dangerouslySkipPermissions = false
+var agentName string
 
 var rootCmd = &cobra.Command{
 	Use:   "shan [query]",
@@ -59,14 +61,24 @@ var rootCmd = &cobra.Command{
 			return nil
 		}
 
+		var agentOverride *agents.Agent
+		if agentName != "" {
+			agentOverride, err = agents.LoadAgent(filepath.Join(config.ShannonDir(), "agents"), agentName)
+			if err != nil {
+				return fmt.Errorf("agent %q: %w", agentName, err)
+			}
+			// Ensure agent sessions directory exists
+			os.MkdirAll(filepath.Join(config.ShannonDir(), "agents", agentName, "sessions"), 0700)
+		}
+
 		if len(args) > 0 {
 			// One-shot mode
 			query := strings.Join(args, " ")
-			return runOneShot(cfg, query)
+			return runOneShot(cfg, query, agentOverride)
 		}
 
 		// Interactive mode
-		m := tui.New(cfg, Version)
+		m := tui.New(cfg, Version, agentOverride)
 		m.SetBypassPermissions(dangerouslySkipPermissions)
 		p := tea.NewProgram(m)
 		m.SetProgram(p)
@@ -95,9 +107,10 @@ func init() {
 		false,
 		"Skip all permission checks (hard-blocks still enforced). Use at your own risk.",
 	)
+	rootCmd.Flags().StringVar(&agentName, "agent", "", "Named agent to use (from ~/.shannon/agents/)")
 }
 
-func runOneShot(cfg *config.Config, query string) error {
+func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) error {
 	// Background auto-update (non-blocking)
 	if cfg.AutoUpdateCheck {
 		go func() {
@@ -151,6 +164,9 @@ func runOneShot(cfg *config.Config, query string) error {
 	}
 	loop.SetHandler(&cliEventHandler{autoApprove: autoApprove})
 	loop.SetBypassPermissions(dangerouslySkipPermissions)
+	if agentOverride != nil {
+		loop.SetAgentOverride(agentOverride.Prompt, agentOverride.Memory)
+	}
 	if mcpCtx := mcppkg.BuildContext(cfg.MCPServers); mcpCtx != "" {
 		loop.SetMCPContext(mcpCtx)
 	}

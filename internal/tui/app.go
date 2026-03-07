@@ -20,6 +20,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/shan/internal/agents"
 	"github.com/Kocoro-lab/shan/internal/audit"
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
@@ -188,7 +189,7 @@ func (m *Model) finishHeaderAnimation() tea.Cmd {
 	return nil // let the Update wrapper's flushPrints handle draining
 }
 
-func New(cfg *config.Config, version string) *Model {
+func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model {
 	// Get terminal width for initial sizing
 	width := 80
 	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
@@ -216,6 +217,9 @@ func New(cfg *config.Config, version string) *Model {
 	gateway := client.NewGatewayClient(cfg.Endpoint, cfg.APIKey)
 	shannonDir := config.ShannonDir()
 	sessDir := shannonDir + "/sessions"
+	if agentOverride != nil {
+		sessDir = filepath.Join(shannonDir, "agents", agentOverride.Name, "sessions")
+	}
 	sessMgr := session.NewManager(sessDir)
 	sessMgr.NewSession()
 
@@ -271,6 +275,9 @@ func New(cfg *config.Config, version string) *Model {
 	}
 	if cfg.Agent.ReasoningEffort != "" {
 		loop.SetReasoningEffort(cfg.Agent.ReasoningEffort)
+	}
+	if agentOverride != nil {
+		loop.SetAgentOverride(agentOverride.Prompt, agentOverride.Memory)
 	}
 	loop.SetEnableStreaming(true) // streaming enabled but deltas are suppressed — only final text rendered
 	if mcpCtx := mcp.BuildContext(cfg.MCPServers); mcpCtx != "" {

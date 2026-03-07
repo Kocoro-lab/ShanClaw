@@ -68,10 +68,26 @@ func (m *Manager) ResumeLatest() (*Session, error) {
 	if len(summaries) == 0 {
 		return nil, nil
 	}
-	// List() returns sorted by CreatedAt desc, but we want UpdatedAt.
-	// Load the most recently created as a reasonable default —
-	// for daemon use, it's typically the only session per agent.
-	return m.Resume(summaries[0].ID)
+
+	// Find the session with the most recent UpdatedAt.
+	// List() only has CreatedAt, so we load each to check UpdatedAt.
+	// For typical daemon use (1 session per agent), this is just 1 load.
+	var bestID string
+	var bestTime time.Time
+	for _, s := range summaries {
+		sess, err := m.store.Load(s.ID)
+		if err != nil {
+			continue
+		}
+		if sess.UpdatedAt.After(bestTime) {
+			bestTime = sess.UpdatedAt
+			bestID = sess.ID
+		}
+	}
+	if bestID == "" {
+		return nil, nil
+	}
+	return m.Resume(bestID)
 }
 
 func generateID() string {

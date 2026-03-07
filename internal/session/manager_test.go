@@ -20,31 +20,43 @@ func TestManager_ResumeLatest_EmptyDir(t *testing.T) {
 	}
 }
 
-func TestManager_ResumeLatest_FindsMostRecent(t *testing.T) {
+func TestManager_ResumeLatest_FindsMostRecentByUpdatedAt(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
 
-	// Save two sessions with different UpdatedAt times
-	old := &Session{
-		ID:        "old-session",
-		Title:     "Old",
-		UpdatedAt: time.Now().Add(-1 * time.Hour),
-		Messages: []client.Message{
-			{Role: "user", Content: client.NewTextContent("old message")},
-		},
-	}
-	store.Save(old)
+	// Create "older-created" session first, then update it later
+	// Create "newer-created" session second, but don't update it
+	// ResumeLatest should pick "older-created" because it was updated more recently.
 
-	recent := &Session{
-		ID:        "recent-session",
-		Title:     "Recent",
-		UpdatedAt: time.Now(),
+	olderCreated := &Session{
+		ID:        "older-created",
+		Title:     "Created first",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
 		Messages: []client.Message{
-			{Role: "user", Content: client.NewTextContent("recent message")},
-			{Role: "assistant", Content: client.NewTextContent("recent reply")},
+			{Role: "user", Content: client.NewTextContent("first message")},
 		},
 	}
-	store.Save(recent)
+	store.Save(olderCreated) // UpdatedAt = now
+
+	// Simulate passage of time
+	time.Sleep(10 * time.Millisecond)
+
+	newerCreated := &Session{
+		ID:        "newer-created",
+		Title:     "Created second",
+		CreatedAt: time.Now(),
+		Messages: []client.Message{
+			{Role: "user", Content: client.NewTextContent("second message")},
+		},
+	}
+	store.Save(newerCreated) // UpdatedAt = now (slightly later)
+
+	// Now update the older-created session (simulating daemon appending a turn)
+	time.Sleep(10 * time.Millisecond)
+	olderCreated.Messages = append(olderCreated.Messages,
+		client.Message{Role: "assistant", Content: client.NewTextContent("reply")},
+	)
+	store.Save(olderCreated) // UpdatedAt = now (latest)
 
 	m := NewManager(dir)
 	sess, err := m.ResumeLatest()
@@ -54,15 +66,14 @@ func TestManager_ResumeLatest_FindsMostRecent(t *testing.T) {
 	if sess == nil {
 		t.Fatal("expected a session, got nil")
 	}
-	if sess.ID != "recent-session" {
-		t.Errorf("expected most recent session 'recent-session', got %q", sess.ID)
+	// Should pick "older-created" because it has the latest UpdatedAt
+	if sess.ID != "older-created" {
+		t.Errorf("expected 'older-created' (most recently updated), got %q", sess.ID)
 	}
 	if len(sess.Messages) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(sess.Messages))
 	}
-
-	// Should be set as current
-	if m.Current() == nil || m.Current().ID != "recent-session" {
+	if m.Current() == nil || m.Current().ID != "older-created" {
 		t.Error("ResumeLatest should set the session as current")
 	}
 }

@@ -1,28 +1,32 @@
 package daemon
 
 import (
+	"log"
 	"path/filepath"
 	"sync"
 
 	"github.com/Kocoro-lab/shan/internal/session"
 )
 
+type agentEntry struct {
+	mgr *session.Manager
+	mu  sync.Mutex // guards session read/append/save for this agent
+}
+
 // SessionCache manages one session.Manager per agent.
 // For daemon mode, each agent has a single long-lived session that is
 // always resumed. The cache is keyed by agent name ("" = default agent).
+// Per-agent mutexes serialize concurrent messages to the same agent.
 type SessionCache struct {
-	mu          sync.RWMutex
-	managers    map[string]*session.Manager
-	shannonDir  string
+	mu         sync.Mutex
+	agents     map[string]*agentEntry
+	shannonDir string
 }
 
 // NewSessionCache creates a cache rooted at the given shannon directory.
-// Sessions are stored at:
-//   - Named agents: <shannonDir>/agents/<name>/sessions/
-//   - Default agent: <shannonDir>/sessions/
 func NewSessionCache(shannonDir string) *SessionCache {
 	return &SessionCache{
-		managers:   make(map[string]*session.Manager),
+		agents:     make(map[string]*agentEntry),
 		shannonDir: shannonDir,
 	}
 }
@@ -31,35 +35,50 @@ func NewSessionCache(shannonDir string) *SessionCache {
 // if needed. For daemon mode, it auto-resumes the latest session or creates
 // a new one if none exists.
 func (sc *SessionCache) GetOrCreate(agent string) *session.Manager {
-	sc.mu.RLock()
-	mgr, ok := sc.managers[agent]
-	sc.mu.RUnlock()
-	if ok {
-		return mgr
-	}
+	entry := sc.getEntry(agent)
+	return entry.mgr
+}
 
+// Lock acquires the per-agent mutex. The caller MUST call Unlock when done.
+// Use this to serialize concurrent messages to the same agent:
+//
+//	mgr := cache.GetOrCreate(agent)
+//	cache.Lock(agent)
+//	defer cache.Unlock(agent)
+//	// ... read history, run agent, append, save ...
+func (sc *SessionCache) Lock(agent string) {
+	sc.getEntry(agent).mu.Lock()
+}
+
+// Unlock releases the per-agent mutex.
+func (sc *SessionCache) Unlock(agent string) {
+	sc.getEntry(agent).mu.Unlock()
+}
+
+func (sc *SessionCache) getEntry(agent string) *agentEntry {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	// Double-check after write lock
-	if mgr, ok := sc.managers[agent]; ok {
-		return mgr
+	if entry, ok := sc.agents[agent]; ok {
+		return entry
 	}
 
 	sessDir := sc.sessionsDir(agent)
-	mgr = session.NewManager(sessDir)
+	mgr := session.NewManager(sessDir)
 
-	// Try to resume the latest session for this agent
-	sess, _ := mgr.ResumeLatest()
+	sess, err := mgr.ResumeLatest()
+	if err != nil {
+		log.Printf("daemon: failed to resume session for agent %q: %v (starting fresh)", agent, err)
+	}
 	if sess == nil {
 		mgr.NewSession()
 	}
 
-	sc.managers[agent] = mgr
-	return mgr
+	entry := &agentEntry{mgr: mgr}
+	sc.agents[agent] = entry
+	return entry
 }
 
-// sessionsDir returns the sessions directory for an agent.
 func (sc *SessionCache) sessionsDir(agent string) string {
 	if agent == "" {
 		return filepath.Join(sc.shannonDir, "sessions")

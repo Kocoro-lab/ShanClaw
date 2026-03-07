@@ -363,13 +363,23 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		// exceed 85% of context window, generate a summary and shape history.
 		// Only attempt when there are enough messages to meaningfully shape
 		// (system + first user + minKeepLast pairs = 9 messages minimum).
-		// Uses actual gateway token counts; no heuristic guessing.
+		// On first iteration (daemon resume with large history), uses heuristic
+		// estimate since no gateway token count is available yet.
 		// After 3 consecutive summary failures, back off for 5 iterations before retrying.
 		const maxSummaryFailures = 3
 		const summaryBackoffIters = 5
 		summaryBackedOff := summaryFailures >= maxSummaryFailures && (i-summaryFailures) < summaryBackoffIters
 		if a.contextWindow > 0 && !compactionApplied && !summaryBackedOff && len(messages) > ctxwin.MinShapeable() {
-			shouldCompact := lastInputTokens > 0 && ctxwin.ShouldCompact(lastInputTokens, lastOutputTokens, a.contextWindow)
+			shouldCompact := false
+			if lastInputTokens > 0 {
+				shouldCompact = ctxwin.ShouldCompact(lastInputTokens, lastOutputTokens, a.contextWindow)
+			} else if i == 0 {
+				// First iteration: use heuristic for resumed sessions with large history.
+				// The MinShapeable guard above ensures we only estimate when there's
+				// enough history to actually shape (prevents wasted summary calls).
+				est := ctxwin.EstimateTokens(messages)
+				shouldCompact = ctxwin.ShouldCompact(est, 0, a.contextWindow)
+			}
 			if shouldCompact {
 				if compactionSummary == "" {
 					summary, sumErr := ctxwin.GenerateSummary(ctx, a.client, messages)

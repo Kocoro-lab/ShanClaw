@@ -92,6 +92,10 @@ var daemonStartCmd = &cobra.Command{
 				prompt = msg.Text
 			}
 
+			// Per-agent lock serializes concurrent messages to the same agent
+			sessionCache.Lock(agentName)
+			defer sessionCache.Unlock(agentName)
+
 			sessMgr := sessionCache.GetOrCreate(agentName)
 			sess := sessMgr.Current()
 			history := sess.Messages

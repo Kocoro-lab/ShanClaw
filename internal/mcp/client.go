@@ -42,25 +42,44 @@ func NewClientManager() *ClientManager {
 	}
 }
 
-// ConnectAll connects to all configured MCP servers and returns discovered tools.
+// ConnectAll connects to all configured MCP servers in parallel and returns discovered tools.
 func (m *ClientManager) ConnectAll(ctx context.Context, servers map[string]MCPServerConfig) ([]RemoteTool, error) {
-	var allTools []RemoteTool
-	var errs []string
+	type result struct {
+		tools []RemoteTool
+		err   error
+		name  string
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan result, len(servers))
 
 	for name, cfg := range servers {
 		if cfg.Disabled {
 			continue
 		}
+		wg.Add(1)
+		go func(name string, cfg MCPServerConfig) {
+			defer wg.Done()
+			serverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			tools, err := m.connect(serverCtx, name, cfg)
+			results <- result{tools: tools, err: err, name: name}
+		}(name, cfg)
+	}
 
-		// Per-server timeout so slow servers don't starve others
-		serverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		tools, err := m.connect(serverCtx, name, cfg)
-		cancel()
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	var allTools []RemoteTool
+	var errs []string
+	for r := range results {
+		if r.err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", r.name, r.err))
 			continue
 		}
-		allTools = append(allTools, tools...)
+		allTools = append(allTools, r.tools...)
 	}
 
 	if len(errs) > 0 {
@@ -185,15 +204,25 @@ func (m *ClientManager) CallTool(ctx context.Context, serverName, toolName strin
 	return content, result.IsError, nil
 }
 
-// Close shuts down all connected MCP servers.
+// Close shuts down all connected MCP servers in parallel.
 func (m *ClientManager) Close() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	clients := make(map[string]mcpclient.MCPClient, len(m.clients))
 	for name, c := range m.clients {
-		_ = c.Close()
+		clients[name] = c
 		delete(m.clients, name)
 	}
+	m.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, c := range clients {
+		wg.Add(1)
+		go func(c mcpclient.MCPClient) {
+			defer wg.Done()
+			_ = c.Close()
+		}(c)
+	}
+	wg.Wait()
 }
 
 func buildEnvSlice(env map[string]string) []string {

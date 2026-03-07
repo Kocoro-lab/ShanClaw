@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1451,5 +1452,252 @@ func TestToolExecResult_Struct(t *testing.T) {
 	}
 	if results[2].err == nil || results[2].err.Error() != "network timeout" {
 		t.Errorf("results[2]: expected 'network timeout' error, got %v", results[2].err)
+	}
+}
+
+// simpleTool is a minimal tool for compaction tests.
+type simpleTool struct {
+	name string
+	run  func(ctx context.Context, args string) (ToolResult, error)
+}
+
+func (s *simpleTool) Info() ToolInfo {
+	return ToolInfo{
+		Name:        s.name,
+		Description: "simple test tool",
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+	}
+}
+
+func (s *simpleTool) Run(ctx context.Context, args string) (ToolResult, error) {
+	return s.run(ctx, args)
+}
+
+func (s *simpleTool) RequiresApproval() bool { return false }
+
+func TestAgentLoop_CompactionTriggersOnHighTokenUsage(t *testing.T) {
+	// Simulate a multi-turn session that exceeds 85% of context window.
+	//
+	// Flow:
+	// Call 1: tool call response with high input_tokens (triggers compaction after)
+	// Call 2: summary generation (model_tier=small) — called by GenerateSummary
+	// Call 3: final response after compaction with lower tokens
+	var callCount int32
+	var mu sync.Mutex
+	var requestBodies []client.CompletionRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&callCount, 1)
+
+		var req client.CompletionRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		mu.Lock()
+		requestBodies = append(requestBodies, req)
+		mu.Unlock()
+
+		switch n {
+		case 1:
+			// First call: tool call with high token usage
+			json.NewEncoder(w).Encode(nativeResponse("", "tool_use",
+				toolCall("think", `{"thought":"planning"}`), 100000, 10000))
+		case 2:
+			// Summary call: GenerateSummary uses model_tier=small
+			json.NewEncoder(w).Encode(nativeResponse(
+				"User asked to refactor main.go. Assistant read the file and applied changes.",
+				"end_turn", nil, 500, 100))
+		case 3:
+			// Post-compaction: model responds with final text
+			json.NewEncoder(w).Encode(nativeResponse(
+				"Refactoring complete.", "end_turn", nil, 30000, 2000))
+		default:
+			json.NewEncoder(w).Encode(nativeResponse("unexpected call", "end_turn", nil, 100, 50))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(&simpleTool{
+		name: "think",
+		run: func(ctx context.Context, args string) (ToolResult, error) {
+			return ToolResult{Content: "thought recorded"}, nil
+		},
+	})
+
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+	loop.SetContextWindow(128000) // 85% = 108800
+
+	// Provide enough history turns so ShapeHistory has something to drop.
+	// In real usage, 100k input tokens means many prior turns.
+	var history []client.Message
+	for i := 0; i < 30; i++ {
+		history = append(history,
+			client.Message{Role: "user", Content: client.NewTextContent(fmt.Sprintf("user turn %d", i))},
+			client.Message{Role: "assistant", Content: client.NewTextContent(fmt.Sprintf("assistant turn %d", i))},
+		)
+	}
+
+	result, usage, err := loop.Run(context.Background(), "refactor main.go", history)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should have made 3 HTTP calls: tool call, summary, final
+	if atomic.LoadInt32(&callCount) != 3 {
+		t.Errorf("expected 3 HTTP calls (tool + summary + final), got %d", callCount)
+	}
+
+	mu.Lock()
+	bodies := make([]client.CompletionRequest, len(requestBodies))
+	copy(bodies, requestBodies)
+	mu.Unlock()
+
+	// The summary call (2nd HTTP request) should use model_tier=small
+	if len(bodies) >= 2 && bodies[1].ModelTier != "small" {
+		t.Errorf("summary call should use model_tier=small, got %q", bodies[1].ModelTier)
+	}
+
+	// Post-compaction request (3rd HTTP request) should contain summary injection
+	if len(bodies) >= 3 {
+		postCompactMsgs := bodies[2].Messages
+		hasSummary := false
+		for _, m := range postCompactMsgs {
+			if strings.Contains(m.Content.Text(), "Previous context summary:") {
+				hasSummary = true
+				break
+			}
+		}
+		if !hasSummary {
+			t.Error("post-compaction messages should contain summary injection")
+		}
+	}
+
+	// Final result should be the post-compaction response
+	if result != "Refactoring complete." {
+		t.Errorf("expected 'Refactoring complete.', got %q", result)
+	}
+
+	// Usage tracks main-loop LLM calls only (not the summary call).
+	// 2 calls: tool response + post-compaction response
+	if usage.LLMCalls != 2 {
+		t.Errorf("expected 2 main-loop LLM calls in usage, got %d", usage.LLMCalls)
+	}
+}
+
+func TestAgentLoop_CompactionNotTriggeredBelowThreshold(t *testing.T) {
+	// When token usage stays below 85% of context window, no compaction occurs.
+	var callCount int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&callCount, 1)
+		switch n {
+		case 1:
+			// Tool call with moderate token usage (well below 85% of 128k)
+			json.NewEncoder(w).Encode(nativeResponse("", "tool_use",
+				toolCall("think", `{"thought":"ok"}`), 50000, 5000))
+		case 2:
+			// Final response — should be call 2, NOT 3 (no summary call)
+			json.NewEncoder(w).Encode(nativeResponse("Done.", "end_turn", nil, 52000, 1000))
+		default:
+			json.NewEncoder(w).Encode(nativeResponse("unexpected", "end_turn", nil, 100, 50))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(&simpleTool{
+		name: "think",
+		run: func(ctx context.Context, args string) (ToolResult, error) {
+			return ToolResult{Content: "ok"}, nil
+		},
+	})
+
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+	loop.SetContextWindow(128000)
+
+	result, _, err := loop.Run(context.Background(), "check something", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Only 2 calls — no summary call
+	if atomic.LoadInt32(&callCount) != 2 {
+		t.Errorf("expected 2 LLM calls (no compaction), got %d", callCount)
+	}
+	if result != "Done." {
+		t.Errorf("expected 'Done.', got %q", result)
+	}
+}
+
+func TestAgentLoop_CompactionSummaryTransientFailureRecovers(t *testing.T) {
+	// A transient summary failure should retry on the next iteration and recover.
+	var callCount int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&callCount, 1)
+
+		var req client.CompletionRequest
+		json.NewDecoder(r.Body).Decode(&req)
+
+		switch n {
+		case 1:
+			// Tool call with high tokens
+			json.NewEncoder(w).Encode(nativeResponse("", "tool_use",
+				toolCall("think", `{"thought":"deep"}`), 100000, 10000))
+		case 2:
+			// Summary call fails (transient 500)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("internal error"))
+		case 3:
+			// Retry: another tool call, still high tokens → retries summary
+			json.NewEncoder(w).Encode(nativeResponse("", "tool_use",
+				toolCall("think", `{"thought":"more"}`), 105000, 10000))
+		case 4:
+			// Summary retry succeeds this time
+			json.NewEncoder(w).Encode(nativeResponse(
+				"User was working on a heavy task with deep thinking.",
+				"end_turn", nil, 500, 100))
+		case 5:
+			// Post-compaction final response
+			json.NewEncoder(w).Encode(nativeResponse("Done with compaction.", "end_turn", nil, 30000, 1000))
+		default:
+			json.NewEncoder(w).Encode(nativeResponse("unexpected", "end_turn", nil, 100, 50))
+		}
+	}))
+	defer server.Close()
+
+	gw := client.NewGatewayClient(server.URL, "")
+	reg := NewToolRegistry()
+	reg.Register(&simpleTool{
+		name: "think",
+		run: func(ctx context.Context, args string) (ToolResult, error) {
+			return ToolResult{Content: "thought"}, nil
+		},
+	})
+
+	loop := NewAgentLoop(gw, reg, "medium", "", 25, 2000, 200, nil, nil, nil)
+	loop.SetContextWindow(128000)
+
+	// Provide enough history for compaction to trigger
+	var history []client.Message
+	for i := 0; i < 10; i++ {
+		history = append(history,
+			client.Message{Role: "user", Content: client.NewTextContent(fmt.Sprintf("turn %d", i))},
+			client.Message{Role: "assistant", Content: client.NewTextContent(fmt.Sprintf("reply %d", i))},
+		)
+	}
+
+	result, _, err := loop.Run(context.Background(), "heavy task", history)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// 5 calls: tool + failed summary + tool + successful summary + final
+	if atomic.LoadInt32(&callCount) != 5 {
+		t.Errorf("expected 5 calls (transient failure then recovery), got %d", callCount)
+	}
+	if result != "Done with compaction." {
+		t.Errorf("expected 'Done with compaction.', got %q", result)
 	}
 }

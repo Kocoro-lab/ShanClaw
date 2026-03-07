@@ -263,6 +263,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 	loop := agent.NewAgentLoop(gateway, reg, cfg.ModelTier, shannonDir, cfg.Agent.MaxIterations, cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
 	loop.SetMaxTokens(cfg.Agent.MaxTokens)
 	loop.SetTemperature(cfg.Agent.Temperature)
+	loop.SetContextWindow(cfg.Agent.ContextWindow)
 	if cfg.Agent.Model != "" {
 		loop.SetSpecificModel(cfg.Agent.Model)
 	}
@@ -594,6 +595,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agentLoop = agent.NewAgentLoop(m.gateway, msg.registry, m.cfg.ModelTier, m.shannonDir, m.cfg.Agent.MaxIterations, m.cfg.Tools.ResultTruncation, m.cfg.Tools.ArgsTruncation, &m.cfg.Permissions, m.auditor, m.hookRunner)
 			m.agentLoop.SetMaxTokens(m.cfg.Agent.MaxTokens)
 			m.agentLoop.SetTemperature(m.cfg.Agent.Temperature)
+			m.agentLoop.SetContextWindow(m.cfg.Agent.ContextWindow)
 			if m.cfg.Agent.Model != "" {
 				m.agentLoop.SetSpecificModel(m.cfg.Agent.Model)
 			}

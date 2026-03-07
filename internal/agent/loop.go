@@ -15,6 +15,7 @@ import (
 
 	"github.com/Kocoro-lab/shan/internal/audit"
 	"github.com/Kocoro-lab/shan/internal/client"
+	ctxwin "github.com/Kocoro-lab/shan/internal/context"
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	"github.com/Kocoro-lab/shan/internal/instructions"
 	"github.com/Kocoro-lab/shan/internal/permissions"
@@ -164,6 +165,7 @@ type AgentLoop struct {
 	specificModel   string
 	agentBasePrompt string
 	agentMemory     string
+	contextWindow   int
 }
 
 func NewAgentLoop(gw *client.GatewayClient, tools *ToolRegistry, modelTier string, shannonDir string, maxIter int, resultTrunc int, argsTrunc int, perms *permissions.PermissionsConfig, auditor *audit.AuditLogger, hookRunner *hooks.HookRunner) *AgentLoop {
@@ -224,6 +226,10 @@ func (a *AgentLoop) SetTemperature(temp float64) {
 
 func (a *AgentLoop) SetSpecificModel(model string) {
 	a.specificModel = model
+}
+
+func (a *AgentLoop) SetContextWindow(tokens int) {
+	a.contextWindow = tokens
 }
 
 func (a *AgentLoop) SetAgentOverride(basePrompt, memory string) {
@@ -317,6 +323,11 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		checkpointDone       bool
 		nudgeCount           int
 		hallucinationNudges  int
+		lastInputTokens      int    // actual input tokens from last LLM response
+		lastOutputTokens     int    // actual output tokens from last LLM response
+		compactionSummary    string // cached summary from compaction
+		compactionApplied    bool   // true once messages have been shaped
+		summaryFailures      int    // consecutive summary failures; backs off after 3
 	)
 
 	for i := 0; ; i++ {
@@ -348,6 +359,39 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				checkpointDone = true
 			}
 		}
+		// Context window compaction: when actual tokens from previous LLM call
+		// exceed 85% of context window, generate a summary and shape history.
+		// Only attempt when there are enough messages to meaningfully shape
+		// (system + first user + minKeepLast pairs = 9 messages minimum).
+		// Uses actual gateway token counts; no heuristic guessing.
+		// After 3 consecutive summary failures, back off for 5 iterations before retrying.
+		const maxSummaryFailures = 3
+		const summaryBackoffIters = 5
+		summaryBackedOff := summaryFailures >= maxSummaryFailures && (i-summaryFailures) < summaryBackoffIters
+		if a.contextWindow > 0 && !compactionApplied && !summaryBackedOff && len(messages) > ctxwin.MinShapeable() {
+			shouldCompact := lastInputTokens > 0 && ctxwin.ShouldCompact(lastInputTokens, lastOutputTokens, a.contextWindow)
+			if shouldCompact {
+				if compactionSummary == "" {
+					summary, sumErr := ctxwin.GenerateSummary(ctx, a.client, messages)
+					if sumErr != nil {
+						summaryFailures++
+						fmt.Fprintf(os.Stderr, "[context] compaction summary failed (%d/%d): %v\n", summaryFailures, maxSummaryFailures, sumErr)
+					} else {
+						summaryFailures = 0 // reset on success
+						compactionSummary = summary
+					}
+				}
+				if compactionSummary != "" {
+					before := len(messages)
+					messages = ctxwin.ShapeHistory(messages, compactionSummary, a.contextWindow)
+					if len(messages) < before {
+						fmt.Fprintf(os.Stderr, "[context] compacted: %d → %d messages\n", before, len(messages))
+					}
+					compactionApplied = true
+				}
+			}
+		}
+
 		// Call LLM — streaming or blocking
 		var resp *client.CompletionResponse
 		var err error
@@ -377,8 +421,18 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		}
 
 		usage.Add(resp.Usage)
+		lastInputTokens = resp.Usage.InputTokens
+		lastOutputTokens = resp.Usage.OutputTokens
 		if resp.Model != "" {
 			usage.Model = resp.Model
+		}
+
+		// Allow re-compaction only if context dropped below threshold
+		// (meaning compaction worked). If still over, stay compacted to
+		// avoid repeated summary calls when at the minKeepLast floor.
+		if compactionApplied && !ctxwin.ShouldCompact(lastInputTokens, lastOutputTokens, a.contextWindow) {
+			compactionApplied = false
+			compactionSummary = ""
 		}
 
 		// Handle text-only responses (no tool calls).

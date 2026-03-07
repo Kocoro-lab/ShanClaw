@@ -44,7 +44,8 @@ type AgentConfig struct {
 	ThinkingMode    string  `mapstructure:"thinking_mode" yaml:"thinking_mode"` // "adaptive" (default) or "enabled" (fixed budget)
 	ThinkingBudget  int     `mapstructure:"thinking_budget" yaml:"thinking_budget"`
 	ReasoningEffort string  `mapstructure:"reasoning_effort" yaml:"reasoning_effort"`
-	Model           string  `mapstructure:"model" yaml:"model"` // specific model override
+	Model           string  `mapstructure:"model" yaml:"model"`          // specific model override
+	ContextWindow   int     `mapstructure:"context_window" yaml:"context_window"` // model context window in tokens
 }
 
 type ToolsConfig struct {
@@ -95,6 +96,7 @@ func Load() (*Config, error) {
 	viper.SetDefault("agent.thinking_budget", 10000)
 	viper.SetDefault("agent.reasoning_effort", "")
 	viper.SetDefault("agent.model", "")
+	viper.SetDefault("agent.context_window", 128000)
 	viper.SetDefault("tools.bash_timeout", 120)
 	viper.SetDefault("tools.bash_max_output", 30000)
 	viper.SetDefault("tools.result_truncation", 2000)
@@ -222,6 +224,7 @@ type overlayAgentConfig struct {
 	ThinkingBudget  *int     `yaml:"thinking_budget"`
 	ReasoningEffort *string  `yaml:"reasoning_effort"`
 	Model           *string  `yaml:"model"`
+	ContextWindow   *int     `yaml:"context_window"`
 }
 
 type overlayToolsConfig struct {
@@ -246,6 +249,7 @@ func buildDefaultSources() map[string]ConfigSource {
 		"agent.thinking":           {Level: "default"},
 		"agent.thinking_mode":      {Level: "default"},
 		"agent.thinking_budget":    {Level: "default"},
+		"agent.context_window":     {Level: "default"},
 		"tools.bash_timeout":       {Level: "default"},
 		"tools.bash_max_output":    {Level: "default"},
 		"tools.result_truncation":  {Level: "default"},
@@ -288,6 +292,9 @@ func markGlobalSources(cfg *Config, file string) {
 	}
 	if viper.IsSet("agent.thinking_budget") {
 		cfg.Sources["agent.thinking_budget"] = src
+	}
+	if viper.IsSet("agent.context_window") {
+		cfg.Sources["agent.context_window"] = src
 	}
 	if viper.IsSet("tools.bash_timeout") {
 		cfg.Sources["tools.bash_timeout"] = src
@@ -391,6 +398,10 @@ func mergeOverlayFile(cfg *Config, file string, level string) {
 		if overlay.Agent.Model != nil {
 			cfg.Agent.Model = *overlay.Agent.Model
 			cfg.Sources["agent.model"] = src
+		}
+		if overlay.Agent.ContextWindow != nil {
+			cfg.Agent.ContextWindow = *overlay.Agent.ContextWindow
+			cfg.Sources["agent.context_window"] = src
 		}
 	}
 

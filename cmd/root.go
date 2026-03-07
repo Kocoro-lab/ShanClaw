@@ -149,6 +149,7 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	loop := agent.NewAgentLoop(gw, reg, cfg.ModelTier, shannonDir, cfg.Agent.MaxIterations, cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
 	loop.SetMaxTokens(cfg.Agent.MaxTokens)
 	loop.SetTemperature(cfg.Agent.Temperature)
+	loop.SetContextWindow(cfg.Agent.ContextWindow)
 	if cfg.Agent.Model != "" {
 		loop.SetSpecificModel(cfg.Agent.Model)
 	}

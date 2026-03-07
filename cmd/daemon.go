@@ -99,6 +99,7 @@ var daemonStartCmd = &cobra.Command{
 				cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
 			loop.SetMaxTokens(cfg.Agent.MaxTokens)
 			loop.SetTemperature(cfg.Agent.Temperature)
+			loop.SetContextWindow(cfg.Agent.ContextWindow)
 			loop.SetEnableStreaming(false)
 			if agentOverride != nil {
 				loop.SetAgentOverride(agentOverride.Prompt, agentOverride.Memory)

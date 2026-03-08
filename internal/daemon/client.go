@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -15,35 +16,29 @@ import (
 // MaxConcurrentAgents limits how many agent loops can run simultaneously.
 const MaxConcurrentAgents = 5
 
-type IncomingMessage struct {
-	Channel   string    `json:"channel"`
-	ThreadID  string    `json:"thread_id"`
-	Sender    string    `json:"sender"`
-	Text      string    `json:"text"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-type OutgoingReply struct {
-	Channel  string `json:"channel"`
-	ThreadID string `json:"thread_id"`
-	Text     string `json:"text"`
-}
-
 type Client struct {
-	endpoint string
-	apiKey   string
-	conn     *websocket.Conn
-	writeMu  sync.Mutex // gorilla/websocket requires single writer
-	onMsg    func(IncomingMessage)
-	sem      chan struct{} // bounds concurrent agent dispatches
+	endpoint      string
+	apiKey        string
+	conn          *websocket.Conn
+	writeMu       sync.Mutex
+	onMsg         func(MessagePayload) string // returns reply text
+	onSystem      func(string)                // system notifications
+	sem           chan struct{}
+	pendingClaims sync.Map   // map[string]chan bool
+	activeMsgs    sync.Map   // map[string]context.CancelFunc
+	connected     atomic.Bool
+	activeAgent   atomic.Value // stores string
+	startTime     time.Time
 }
 
-func NewClient(endpoint, apiKey string, onMsg func(IncomingMessage)) *Client {
+func NewClient(endpoint, apiKey string, onMsg func(MessagePayload) string, onSystem func(string)) *Client {
 	return &Client{
-		endpoint: endpoint,
-		apiKey:   apiKey,
-		onMsg:    onMsg,
-		sem:      make(chan struct{}, MaxConcurrentAgents),
+		endpoint:  endpoint,
+		apiKey:    apiKey,
+		onMsg:     onMsg,
+		onSystem:  onSystem,
+		sem:       make(chan struct{}, MaxConcurrentAgents),
+		startTime: time.Now(),
 	}
 }
 
@@ -61,43 +56,30 @@ func (c *Client) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) Listen(ctx context.Context) error {
-	if c.conn == nil {
-		return fmt.Errorf("not connected")
-	}
-	defer c.conn.Close()
-	go func() {
-		<-ctx.Done()
-		c.conn.Close()
-	}()
-	for {
-		_, data, err := c.conn.ReadMessage()
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return fmt.Errorf("read: %w", err)
-		}
-		var msg IncomingMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			log.Printf("daemon: invalid message: %v", err)
-			continue
-		}
-		// Dispatch in goroutine with bounded concurrency so the read loop
-		// continues processing messages (and pong frames) while agents run.
-		c.sem <- struct{}{}
-		go func(m IncomingMessage) {
-			defer func() { <-c.sem }()
-			c.onMsg(m)
-		}(msg)
-	}
+// IsConnected reports whether the client has an active WebSocket connection.
+func (c *Client) IsConnected() bool {
+	return c.connected.Load()
 }
 
-func (c *Client) SendReply(reply OutgoingReply) error {
+// ActiveAgent returns the name of the agent currently processing a message,
+// or "" if idle.
+func (c *Client) ActiveAgent() string {
+	if v := c.activeAgent.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
+}
+
+// Uptime returns how long since the client was created.
+func (c *Client) Uptime() time.Duration {
+	return time.Since(c.startTime)
+}
+
+func (c *Client) sendEnvelope(dm DaemonMessage) error {
 	if c.conn == nil {
 		return fmt.Errorf("not connected")
 	}
-	data, err := json.Marshal(reply)
+	data, err := json.Marshal(dm)
 	if err != nil {
 		return err
 	}
@@ -106,6 +88,174 @@ func (c *Client) SendReply(reply OutgoingReply) error {
 	return c.conn.WriteMessage(websocket.TextMessage, data)
 }
 
+func (c *Client) sendClaim(messageID string) error {
+	return c.sendEnvelope(DaemonMessage{Type: MsgTypeClaim, MessageID: messageID})
+}
+
+func (c *Client) sendProgress(messageID string) error {
+	return c.sendEnvelope(DaemonMessage{Type: MsgTypeProgress, MessageID: messageID})
+}
+
+// SendReply sends the final reply for a message and cancels its heartbeat.
+func (c *Client) SendReply(messageID string, payload ReplyPayload) error {
+	if cancel, ok := c.activeMsgs.LoadAndDelete(messageID); ok {
+		cancel.(context.CancelFunc)()
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return c.sendEnvelope(DaemonMessage{Type: MsgTypeReply, MessageID: messageID, Payload: payloadBytes})
+}
+
+func (c *Client) sendDisconnect() error {
+	return c.sendEnvelope(DaemonMessage{Type: MsgTypeDisconnect})
+}
+
+// Close sends a disconnect message and closes the WebSocket connection.
+func (c *Client) Close() error {
+	if c.conn == nil {
+		return nil
+	}
+	_ = c.sendDisconnect()
+	return c.conn.Close()
+}
+
+// Listen reads messages from the WebSocket and dispatches them.
+// It blocks until the context is cancelled or the connection drops.
+func (c *Client) Listen(ctx context.Context) error {
+	if c.conn == nil {
+		return fmt.Errorf("not connected")
+	}
+	c.connected.Store(true)
+	defer func() {
+		c.connected.Store(false)
+		c.conn.Close()
+	}()
+
+	go func() {
+		<-ctx.Done()
+		_ = c.sendDisconnect()
+		c.conn.Close()
+	}()
+
+	for {
+		_, data, err := c.conn.ReadMessage()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("read: %w", err)
+		}
+
+		var sm ServerMessage
+		if err := json.Unmarshal(data, &sm); err != nil {
+			log.Printf("daemon: invalid message: %v", err)
+			continue
+		}
+
+		switch sm.Type {
+		case MsgTypeConnected:
+			log.Println("daemon: connected to Shannon Cloud")
+		case MsgTypeMessage:
+			go c.handleMessage(ctx, sm)
+		case MsgTypeClaimAck:
+			if ch, ok := c.pendingClaims.Load(sm.MessageID); ok {
+				var ack ClaimAckPayload
+				if err := json.Unmarshal(sm.Payload, &ack); err == nil {
+					ch.(chan bool) <- ack.Granted
+				}
+			}
+		case MsgTypeSystem:
+			if c.onSystem != nil {
+				var text string
+				if err := json.Unmarshal(sm.Payload, &text); err == nil {
+					c.onSystem(text)
+				}
+			}
+		default:
+			log.Printf("daemon: unknown message type: %s", sm.Type)
+		}
+	}
+}
+
+func (c *Client) handleMessage(ctx context.Context, sm ServerMessage) {
+	var payload MessagePayload
+	if err := json.Unmarshal(sm.Payload, &payload); err != nil {
+		log.Printf("daemon: invalid message payload: %v", err)
+		return
+	}
+
+	// Acquire semaphore for bounded concurrency.
+	c.sem <- struct{}{}
+	defer func() { <-c.sem }()
+
+	// Send claim.
+	claimCh := make(chan bool, 1)
+	c.pendingClaims.Store(sm.MessageID, claimCh)
+	defer c.pendingClaims.Delete(sm.MessageID)
+
+	if err := c.sendClaim(sm.MessageID); err != nil {
+		log.Printf("daemon: failed to send claim: %v", err)
+		return
+	}
+
+	// Wait for claim ack with 5s timeout.
+	select {
+	case granted := <-claimCh:
+		if !granted {
+			log.Printf("daemon: claim denied for %s", sm.MessageID)
+			return
+		}
+	case <-time.After(5 * time.Second):
+		log.Printf("daemon: claim timeout for %s", sm.MessageID)
+		return
+	case <-ctx.Done():
+		return
+	}
+
+	// Start heartbeat.
+	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
+	c.activeMsgs.Store(sm.MessageID, heartbeatCancel)
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				_ = c.sendProgress(sm.MessageID)
+			}
+		}
+	}()
+
+	// Set active agent.
+	agentName := payload.AgentName
+	if agentName == "" {
+		agentName = "(default)"
+	}
+	c.activeAgent.Store(agentName)
+
+	// Run agent callback.
+	result := c.onMsg(payload)
+
+	// Cleanup.
+	c.activeAgent.Store("")
+	heartbeatCancel()
+	c.activeMsgs.Delete(sm.MessageID)
+
+	// Send reply.
+	_ = c.SendReply(sm.MessageID, ReplyPayload{
+		Channel:  payload.Channel,
+		ThreadID: payload.ThreadID,
+		Text:     result,
+		Format:   FormatText,
+	})
+}
+
+// RunWithReconnect connects to the server and reconnects on failure with
+// exponential backoff. It blocks until the context is cancelled.
 func (c *Client) RunWithReconnect(ctx context.Context) {
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
@@ -129,7 +279,6 @@ func (c *Client) RunWithReconnect(ctx context.Context) {
 			continue
 		}
 		backoff = time.Second
-		log.Println("daemon: connected to Shannon Cloud")
 		if err := c.Listen(ctx); err != nil {
 			if ctx.Err() != nil {
 				return

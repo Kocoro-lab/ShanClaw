@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Kocoro-lab/shan/internal/agent"
@@ -115,6 +116,12 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agentName := r.URL.Query().Get("agent")
+	if agentName != "" {
+		if err := agents.ValidateAgentName(agentName); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+	}
 	sessDir := s.deps.SessionCache.SessionsDir(agentName)
 	mgr := session.NewManager(sessDir)
 	summaries, err := mgr.List()
@@ -150,7 +157,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Header.Get("Accept") == "text/event-stream" {
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") {
 		s.handleMessageSSE(w, r, req)
 		return
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	mcppkg "github.com/Kocoro-lab/shan/internal/mcp"
+	"github.com/Kocoro-lab/shan/internal/session"
 	"github.com/Kocoro-lab/shan/internal/tools"
 )
 
@@ -27,6 +28,11 @@ type RunAgentRequest struct {
 func (r *RunAgentRequest) Validate() error {
 	if strings.TrimSpace(r.Text) == "" {
 		return fmt.Errorf("text is required")
+	}
+	if r.Agent != "" {
+		if err := agents.ValidateAgentName(r.Agent); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -103,7 +109,17 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	deps.SessionCache.Lock(agentName)
 	defer deps.SessionCache.Unlock(agentName)
 
-	sessMgr := deps.SessionCache.GetOrCreate(agentName)
+	var sessMgr *session.Manager
+	if req.SessionID != "" {
+		// Resume a specific session by ID.
+		sessDir := deps.SessionCache.SessionsDir(agentName)
+		sessMgr = session.NewManager(sessDir)
+		if _, err := sessMgr.Resume(req.SessionID); err != nil {
+			return nil, fmt.Errorf("session not found: %s", req.SessionID)
+		}
+	} else {
+		sessMgr = deps.SessionCache.GetOrCreate(agentName)
+	}
 	sess := sessMgr.Current()
 	history := sess.Messages
 

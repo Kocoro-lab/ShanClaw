@@ -72,6 +72,9 @@ var DaemonDeniedTools = map[string]bool{
 // The caller provides an EventHandler to control streaming, approval, and
 // event reporting (WS uses daemonEventHandler, HTTP uses httpEventHandler).
 func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handler agent.EventHandler) (*RunAgentResult, error) {
+	if deps.Config == nil || deps.GW == nil || deps.Registry == nil || deps.SessionCache == nil {
+		return nil, fmt.Errorf("daemon not fully configured")
+	}
 	cfg := deps.Config
 	agentName := req.Agent
 	prompt := req.Text

@@ -267,13 +267,6 @@ func (a *AgentLoop) SetMaxIterations(n int) {
 	a.maxIter = n
 }
 
-// SetAgentOverride sets only the prompt and memory for an agent.
-// Deprecated: Use SwitchAgent for full per-agent scoping.
-func (a *AgentLoop) SetAgentOverride(basePrompt, memory string) {
-	a.agentBasePrompt = basePrompt
-	a.agentMemory = memory
-}
-
 // SwitchAgent applies full per-agent scoping: prompt, memory, tool registry,
 // and MCP context. Pass a new ToolRegistry and MCP context string built from
 // the agent's scoped MCP servers. If reg is nil, the existing registry is kept.

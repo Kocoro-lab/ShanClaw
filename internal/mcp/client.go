@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,12 +83,11 @@ func (m *ClientManager) ConnectAll(ctx context.Context, servers map[string]MCPSe
 	}
 
 	if len(errs) > 0 {
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "MCP: %s\n", e)
-		}
+		combined := fmt.Errorf("%s", strings.Join(errs, "; "))
 		if len(allTools) == 0 {
-			return nil, fmt.Errorf("all MCP servers failed")
+			return nil, combined
 		}
+		return allTools, combined
 	}
 
 	return allTools, nil

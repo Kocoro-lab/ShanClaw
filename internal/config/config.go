@@ -499,7 +499,6 @@ func initMCPDefaults(dir, configPath string) {
 		existing, _ := os.ReadFile(refPath)
 		if !bytes.Equal(existing, mcpDefaultsYAML) {
 			os.WriteFile(refPath, mcpDefaultsYAML, 0600)
-			fmt.Fprintf(os.Stderr, "MCP: default server catalog available at %s\n", refPath)
 		}
 		// Write marker so we don't notify again
 		if f, err := os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600); err == nil {

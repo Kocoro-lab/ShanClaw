@@ -79,9 +79,12 @@ func (m *Manager) ResumeLatest() (*Session, error) {
 	if m.store.index != nil {
 		id, err := m.store.index.LatestUpdatedID()
 		if err == nil && id != "" {
-			return m.Resume(id)
+			if sess, resumeErr := m.Resume(id); resumeErr == nil {
+				return sess, nil
+			}
+			// JSON file missing/corrupt — fall through to brute-force
 		}
-		// On error or empty result, fall through to JSON scan
+		// On error, empty result, or failed resume — fall through to JSON scan
 	}
 
 	summaries, err := m.store.List()

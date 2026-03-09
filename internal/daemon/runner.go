@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 
 	"github.com/Kocoro-lab/shan/internal/agent"
 	"github.com/Kocoro-lab/shan/internal/agents"
@@ -54,14 +55,25 @@ type RunAgentUsage struct {
 // ServerDeps holds shared dependencies required by both the WS callback
 // and the HTTP server for running agent loops.
 type ServerDeps struct {
+	mu           sync.RWMutex // guards Config, Registry, Cleanup during reload
 	Config       *config.Config
 	GW           *client.GatewayClient
 	Registry     *agent.ToolRegistry
+	Cleanup      func() // closes MCP connections; swapped on reload
 	ShannonDir   string
 	AgentsDir    string
 	Auditor      *audit.AuditLogger
 	HookRunner   *hooks.HookRunner
 	SessionCache *SessionCache
+}
+
+// Snapshot returns current Config and Registry under read lock.
+// Callers use the returned values without holding the lock.
+func (d *ServerDeps) Snapshot() (*config.Config, *agent.ToolRegistry) {
+	d.mu.RLock()
+	cfg, reg := d.Config, d.Registry
+	d.mu.RUnlock()
+	return cfg, reg
 }
 
 // DaemonDeniedTools are tools that should not be auto-approved in daemon mode.
@@ -76,10 +88,10 @@ var DaemonDeniedTools = map[string]bool{
 // The caller provides an EventHandler to control streaming, approval, and
 // event reporting (WS uses daemonEventHandler, HTTP uses httpEventHandler).
 func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handler agent.EventHandler) (*RunAgentResult, error) {
-	if deps.Config == nil || deps.GW == nil || deps.Registry == nil || deps.SessionCache == nil {
+	cfg, baseReg := deps.Snapshot()
+	if cfg == nil || deps.GW == nil || baseReg == nil || deps.SessionCache == nil {
 		return nil, fmt.Errorf("daemon not fully configured")
 	}
-	cfg := deps.Config
 	agentName := req.Agent
 	prompt := req.Text
 
@@ -118,7 +130,7 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	history := sess.Messages
 
 	// Clone and apply per-agent tool filter
-	reg := deps.Registry.Clone()
+	reg := baseReg.Clone()
 	if agentOverride != nil {
 		reg = tools.ApplyToolFilter(reg, agentOverride)
 	}
@@ -177,7 +189,7 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	loop.SetHandler(handler)
 
 	// Wire handler to cloud_delegate tool so it can stream events.
-	if ct, ok := deps.Registry.Get("cloud_delegate"); ok {
+	if ct, ok := baseReg.Get("cloud_delegate"); ok {
 		if cdt, ok := ct.(*tools.CloudDelegateTool); ok {
 			cdt.SetHandler(handler)
 		}

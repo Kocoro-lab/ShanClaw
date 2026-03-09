@@ -90,6 +90,29 @@ func TestSessionCache_GetOrCreate_CachesManager(t *testing.T) {
 	}
 }
 
+func TestSessionCache_Evict(t *testing.T) {
+	dir := t.TempDir()
+	sc := NewSessionCache(dir)
+	defer sc.CloseAll()
+
+	// Create an entry
+	mgr := sc.GetOrCreate("test-agent")
+	if mgr == nil {
+		t.Fatal("expected non-nil manager")
+	}
+
+	// Evict it
+	sc.Lock("test-agent")
+	sc.Evict("test-agent")
+	sc.Unlock("test-agent")
+
+	// GetOrCreate should return a fresh manager
+	mgr2 := sc.GetOrCreate("test-agent")
+	if mgr2 == mgr {
+		t.Error("expected fresh manager after evict")
+	}
+}
+
 func TestSessionCache_GetOrCreate_DifferentAgentsDifferentSessions(t *testing.T) {
 	dir := t.TempDir()
 	cache := NewSessionCache(dir)

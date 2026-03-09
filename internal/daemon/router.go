@@ -60,9 +60,20 @@ func (sc *SessionCache) getEntry(agent string) *agentEntry {
 	defer sc.mu.Unlock()
 
 	if entry, ok := sc.agents[agent]; ok {
+		if entry.mgr != nil {
+			return entry
+		}
+		// Manager was evicted — create a fresh one on the same entry.
+		entry.mgr = sc.newManager(agent)
 		return entry
 	}
 
+	entry := &agentEntry{mgr: sc.newManager(agent)}
+	sc.agents[agent] = entry
+	return entry
+}
+
+func (sc *SessionCache) newManager(agent string) *session.Manager {
 	sessDir := sc.sessionsDir(agent)
 	mgr := session.NewManager(sessDir)
 
@@ -73,10 +84,23 @@ func (sc *SessionCache) getEntry(agent string) *agentEntry {
 	if sess == nil {
 		mgr.NewSession()
 	}
+	return mgr
+}
 
-	entry := &agentEntry{mgr: mgr}
-	sc.agents[agent] = entry
-	return entry
+// Evict closes the session manager for the given agent, keeping the entry
+// in the map so the per-agent mutex remains stable. The next GetOrCreate call
+// will lazily create a fresh manager. The caller must hold the agent's lock.
+func (sc *SessionCache) Evict(agent string) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if entry, ok := sc.agents[agent]; ok {
+		if entry.mgr != nil {
+			if err := entry.mgr.Close(); err != nil {
+				log.Printf("daemon: failed to close session for agent %q: %v", agent, err)
+			}
+			entry.mgr = nil
+		}
+	}
 }
 
 // CloseAll closes all session managers in the cache.
@@ -84,6 +108,9 @@ func (sc *SessionCache) CloseAll() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	for name, entry := range sc.agents {
+		if entry.mgr == nil {
+			continue
+		}
 		if err := entry.mgr.Close(); err != nil {
 			log.Printf("daemon: failed to close session manager for agent %q: %v", name, err)
 		}

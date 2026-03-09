@@ -8,24 +8,9 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
-)
 
-// builtinCommands are command names that cannot be overridden by custom commands.
-var builtinCommands = map[string]struct{}{
-	"help":     {},
-	"research": {},
-	"swarm":    {},
-	"copy":     {},
-	"model":    {},
-	"config":   {},
-	"setup":    {},
-	"sessions": {},
-	"session":  {},
-	"clear":    {},
-	"update":   {},
-	"quit":     {},
-	"exit":     {},
-}
+	"github.com/Kocoro-lab/shan/internal/agents"
+)
 
 // maxCommandFileChars is the maximum character count for a single custom command file.
 const maxCommandFileChars = 8000
@@ -195,7 +180,7 @@ func loadCommandDir(dir string, commands map[string]string) {
 	files := sortedMDFiles(dir)
 	for _, path := range files {
 		name := strings.TrimSuffix(filepath.Base(path), ".md")
-		if _, isBuiltin := builtinCommands[name]; isBuiltin {
+		if agents.BuiltinCommands[name] {
 			fmt.Fprintf(os.Stderr, "warning: custom command %q skipped — conflicts with built-in command\n", name)
 			continue
 		}

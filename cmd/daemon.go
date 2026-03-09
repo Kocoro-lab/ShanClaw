@@ -86,11 +86,7 @@ var daemonStartCmd = &cobra.Command{
 			HookRunner:   hookRunner,
 			SessionCache: sessionCache,
 		}
-		defer func() {
-			if deps.Cleanup != nil {
-				deps.Cleanup()
-			}
-		}()
+		defer deps.ShutdownCleanup()
 
 		wsClient := daemon.NewClient(wsEndpoint, cfg.APIKey, func(msg daemon.MessagePayload) string {
 			req := daemon.RunAgentRequest{

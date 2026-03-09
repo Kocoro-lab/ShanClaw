@@ -76,6 +76,18 @@ func (d *ServerDeps) Snapshot() (*config.Config, *agent.ToolRegistry) {
 	return cfg, reg
 }
 
+// ShutdownCleanup captures and calls the current Cleanup function under lock,
+// preventing races with concurrent reload swaps.
+func (d *ServerDeps) ShutdownCleanup() {
+	d.mu.Lock()
+	cleanup := d.Cleanup
+	d.Cleanup = nil
+	d.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
+}
+
 // DaemonDeniedTools are tools that should not be auto-approved in daemon mode.
 // Schedule mutation tools can create persistent system-level side effects.
 var DaemonDeniedTools = map[string]bool{

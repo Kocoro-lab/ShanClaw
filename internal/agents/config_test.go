@@ -3,7 +3,9 @@ package agents
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestLoadAgent_WithConfig(t *testing.T) {
@@ -143,6 +145,31 @@ func TestLoadAgent_BadConfig(t *testing.T) {
 	_, err := LoadAgent(dir, "bad-cfg")
 	if err == nil {
 		t.Error("expected error for bad config.yaml")
+	}
+}
+
+func TestLoadAgent_CommandUTF8Truncation(t *testing.T) {
+	dir := t.TempDir()
+	agentDir := filepath.Join(dir, "utf8-agent")
+	os.MkdirAll(filepath.Join(agentDir, "commands"), 0700)
+	os.WriteFile(filepath.Join(agentDir, "AGENT.md"), []byte("agent"), 0600)
+
+	// Each あ is 3 bytes. Create content longer than maxAgentCommandChars runes.
+	content := strings.Repeat("あ", 8010)
+	os.WriteFile(filepath.Join(agentDir, "commands", "test.md"), []byte(content), 0600)
+
+	a, err := LoadAgent(dir, "utf8-agent")
+	if err != nil {
+		t.Fatalf("LoadAgent: %v", err)
+	}
+
+	cmd := a.Commands["test"]
+	runes := []rune(cmd)
+	if len(runes) != 8000 {
+		t.Errorf("expected 8000 runes, got %d", len(runes))
+	}
+	if !utf8.ValidString(cmd) {
+		t.Error("truncated command is not valid UTF-8")
 	}
 }
 

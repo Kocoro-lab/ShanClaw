@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -160,8 +161,8 @@ func loadAgentCommands(dir string) map[string]string {
 			continue
 		}
 		content := string(data)
-		if len(content) > maxAgentCommandChars {
-			content = content[:maxAgentCommandChars]
+		if utf8.RuneCountInString(content) > maxAgentCommandChars {
+			content = string([]rune(content)[:maxAgentCommandChars])
 		}
 		commands[name] = content
 	}

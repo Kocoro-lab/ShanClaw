@@ -10,6 +10,7 @@ import (
 func TestManager_ResumeLatest_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	m := NewManager(dir)
+	defer m.Close()
 
 	sess, err := m.ResumeLatest()
 	if err != nil {
@@ -23,6 +24,7 @@ func TestManager_ResumeLatest_EmptyDir(t *testing.T) {
 func TestManager_ResumeLatest_FindsMostRecentByUpdatedAt(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
+	defer store.Close()
 
 	// Create "older-created" session first, then update it later
 	// Create "newer-created" session second, but don't update it
@@ -59,6 +61,7 @@ func TestManager_ResumeLatest_FindsMostRecentByUpdatedAt(t *testing.T) {
 	store.Save(olderCreated) // UpdatedAt = now (latest)
 
 	m := NewManager(dir)
+	defer m.Close()
 	sess, err := m.ResumeLatest()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -81,6 +84,7 @@ func TestManager_ResumeLatest_FindsMostRecentByUpdatedAt(t *testing.T) {
 func TestManager_ResumeLatest_SingleSession(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
+	defer store.Close()
 
 	store.Save(&Session{
 		ID:    "only-one",
@@ -91,6 +95,7 @@ func TestManager_ResumeLatest_SingleSession(t *testing.T) {
 	})
 
 	m := NewManager(dir)
+	defer m.Close()
 	sess, err := m.ResumeLatest()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

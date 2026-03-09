@@ -11,6 +11,7 @@ import (
 func TestStore_SaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
+	defer store.Close()
 
 	sess := &Session{
 		ID:    "test-123",
@@ -41,6 +42,7 @@ func TestStore_SaveLoad(t *testing.T) {
 func TestStore_List(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
+	defer store.Close()
 
 	store.Save(&Session{ID: "aaa", Title: "First"})
 	store.Save(&Session{ID: "bbb", Title: "Second"})
@@ -57,6 +59,7 @@ func TestStore_List(t *testing.T) {
 func TestStore_Delete(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
+	defer store.Close()
 
 	store.Save(&Session{ID: "del-me", Title: "Delete me"})
 
@@ -78,6 +81,7 @@ func TestStore_Delete(t *testing.T) {
 func TestStore_SaveLoadWithImageContent(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
+	defer store.Close()
 
 	sess := &Session{
 		ID:    "vision-test",
@@ -254,6 +258,7 @@ func TestStore_LoadLegacyStringContent(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "legacy-test.json"), []byte(legacyJSON), 0600)
 
 	store := NewStore(dir)
+	defer store.Close()
 	loaded, err := store.Load("legacy-test")
 	if err != nil {
 		t.Fatalf("load legacy failed: %v", err)

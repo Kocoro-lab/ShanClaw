@@ -11,6 +11,7 @@ Go CLI tool (`shan`) — the command-line interface to the Shannon AI platform. 
 - **Bubbletea v1.3.10 + Bubbles v1.0.0** — TUI (`internal/tui/app.go`)
 - **gorilla/websocket** — daemon WebSocket client
 - **adhocore/gronx** — cron expression validation
+- **modernc.org/sqlite** — pure-Go SQLite for session FTS5 search index
 - **chromedp** — browser automation (isolated Chrome profile)
 - **mcp-go** — MCP client/server
 
@@ -57,8 +58,9 @@ internal/
   prompt/
     builder.go         # BuildSystemPrompt — 6 layers, token-budgeted
   session/
-    store.go           # Session JSON persistence
-    manager.go         # NewSession, Resume, Save, List
+    store.go           # Session JSON persistence + SQLite index integration
+    manager.go         # NewSession, Resume, Save, List, Search, Close
+    index.go           # SQLite FTS5 search index (sessions.db)
   mcp/
     client.go          # MCP client manager (stdio + HTTP transports)
     server.go          # MCP server (JSON-RPC 2.0 over stdio)
@@ -71,6 +73,7 @@ internal/
     # directory_list, think, http, system_info, clipboard, notify, process,
     # applescript, accessibility, browser, screenshot, computer
     schedule.go        # schedule_create/list/update/remove tools
+    session_search.go  # session_search tool (FTS5 keyword search)
     mcp_tool.go        # MCPTool adapter
     server.go          # ServerTool adapter (gateway remote tools)
   tui/
@@ -103,6 +106,7 @@ Scalars override, lists merge+dedup, structs field-level merge. MCP server env v
 ### File Paths
 - Agent definitions: `~/.shannon/agents/<name>/AGENT.md` + `MEMORY.md` + `config.yaml` + `commands/*.md` + `skills/*.yaml`
 - Sessions: `~/.shannon/sessions/` (default) or `~/.shannon/agents/<name>/sessions/` (per-agent)
+- Session index: `<sessions-dir>/sessions.db` (SQLite FTS5, auto-rebuilt from JSON if deleted)
 - Schedule index: `~/.shannon/schedules.json`
 - Schedule plists: `~/Library/LaunchAgents/com.shannon.schedule.<id>.plist`
 - Audit log: `~/.shannon/logs/audit.log`
@@ -137,9 +141,10 @@ Schedule tests use `t.TempDir()` as `plistDir` — they never write to real `~/L
 - Release: `git tag -a vX.Y.Z` → `git push origin vX.Y.Z` → CI builds + publishes
 - `docs/plans/` is gitignored — never commit plan files
 
-## 22 Local Tools
+## 23 Local Tools
 
 **File ops:** file_read, file_write, file_edit, glob, grep, directory_list
 **Shell/system:** bash, system_info, process, http, think
 **macOS GUI:** accessibility (primary), applescript, screenshot, computer, clipboard, notify, browser
 **Schedule:** schedule_create, schedule_list, schedule_update, schedule_remove
+**Session:** session_search

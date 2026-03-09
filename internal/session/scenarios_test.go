@@ -37,6 +37,7 @@ func TestScenario_DaemonNamedAgent_PersistsAndResumes(t *testing.T) {
 
 	// Turn 1: daemon creates a new session for ops-bot
 	mgr := NewManager(sessDir)
+	defer mgr.Close()
 	sess, _ := mgr.ResumeLatest() // nil — no sessions yet
 	if sess != nil {
 		t.Fatal("expected no session on first run")
@@ -55,6 +56,7 @@ func TestScenario_DaemonNamedAgent_PersistsAndResumes(t *testing.T) {
 	// Turn 2: simulate daemon receiving another message (same agent)
 	// In real daemon, GetOrCreate returns cached manager, but here we simulate restart
 	mgr2 := NewManager(sessDir)
+	defer mgr2.Close()
 	resumed, err := mgr2.ResumeLatest()
 	if err != nil {
 		t.Fatalf("resume failed: %v", err)
@@ -80,6 +82,7 @@ func TestScenario_DaemonNamedAgent_PersistsAndResumes(t *testing.T) {
 
 	// Turn 3: simulate another restart — should see all 4 messages
 	mgr3 := NewManager(sessDir)
+	defer mgr3.Close()
 	final, err := mgr3.ResumeLatest()
 	if err != nil {
 		t.Fatalf("resume failed: %v", err)
@@ -98,6 +101,7 @@ func TestScenario_DaemonDefaultAgent_UsesGlobalSessionsDir(t *testing.T) {
 	os.MkdirAll(sessDir, 0700)
 
 	mgr := NewManager(sessDir)
+	defer mgr.Close()
 	sess := mgr.NewSession()
 	sess.Messages = append(sess.Messages,
 		client.Message{Role: "user", Content: client.NewTextContent("hello")},
@@ -114,6 +118,7 @@ func TestScenario_DaemonDefaultAgent_UsesGlobalSessionsDir(t *testing.T) {
 
 	// Resume should find it
 	mgr2 := NewManager(sessDir)
+	defer mgr2.Close()
 	resumed, _ := mgr2.ResumeLatest()
 	if resumed == nil {
 		t.Fatal("expected to resume default session")
@@ -131,6 +136,7 @@ func TestScenario_OneShotCreatesNewSession(t *testing.T) {
 	// Simulate two one-shot invocations
 	for i, query := range []string{"review PR #123", "review PR #456"} {
 		mgr := NewManager(sessDir)
+		defer mgr.Close()
 		sess := mgr.NewSession()
 		sess.Title = query
 		sess.Messages = append(sess.Messages,
@@ -153,6 +159,7 @@ func TestScenario_OneShotCreatesNewSession(t *testing.T) {
 
 	// ResumeLatest picks the most recent one (PR #456)
 	mgr := NewManager(sessDir)
+	defer mgr.Close()
 	latest, _ := mgr.ResumeLatest()
 	if latest == nil {
 		t.Fatal("expected to find a session")
@@ -167,6 +174,7 @@ func TestScenario_TUICreatesNewAndResumeByID(t *testing.T) {
 
 	// TUI session 1
 	mgr := NewManager(sessDir)
+	defer mgr.Close()
 	s1 := mgr.NewSession()
 	s1.Title = "TUI session 1"
 	s1.Messages = append(s1.Messages,
@@ -178,6 +186,7 @@ func TestScenario_TUICreatesNewAndResumeByID(t *testing.T) {
 	// TUI session 2 (new invocation)
 	time.Sleep(10 * time.Millisecond)
 	mgr2 := NewManager(sessDir)
+	defer mgr2.Close()
 	s2 := mgr2.NewSession()
 	s2.Title = "TUI session 2"
 	s2.Messages = append(s2.Messages,
@@ -187,6 +196,7 @@ func TestScenario_TUICreatesNewAndResumeByID(t *testing.T) {
 
 	// User /resume on session 1 by ID
 	mgr3 := NewManager(sessDir)
+	defer mgr3.Close()
 	resumed, err := mgr3.Resume(id1)
 	if err != nil {
 		t.Fatalf("resume by ID failed: %v", err)
@@ -203,6 +213,7 @@ func TestScenario_DaemonAndOneShotSameAgent_NoConflict(t *testing.T) {
 
 	// Daemon creates and uses a session
 	daemonMgr := NewManager(sessDir)
+	defer daemonMgr.Close()
 	daemonSess := daemonMgr.NewSession()
 	daemonSess.Title = "daemon session"
 	daemonSess.Messages = append(daemonSess.Messages,
@@ -216,6 +227,7 @@ func TestScenario_DaemonAndOneShotSameAgent_NoConflict(t *testing.T) {
 
 	// One-shot creates a separate session
 	oneshotMgr := NewManager(sessDir)
+	defer oneshotMgr.Close()
 	oneshotSess := oneshotMgr.NewSession()
 	oneshotSess.Title = "oneshot task"
 	oneshotSess.Messages = append(oneshotSess.Messages,
@@ -235,6 +247,7 @@ func TestScenario_DaemonAndOneShotSameAgent_NoConflict(t *testing.T) {
 
 	// Daemon appends another turn to its session
 	daemonMgr2 := NewManager(sessDir)
+	defer daemonMgr2.Close()
 	resumed, _ := daemonMgr2.Resume(daemonID)
 	if resumed == nil {
 		t.Fatal("daemon should resume its own session by ID")
@@ -247,6 +260,7 @@ func TestScenario_DaemonAndOneShotSameAgent_NoConflict(t *testing.T) {
 
 	// ResumeLatest should pick daemon session (most recently updated)
 	latestMgr := NewManager(sessDir)
+	defer latestMgr.Close()
 	latest, _ := latestMgr.ResumeLatest()
 	if latest == nil {
 		t.Fatal("expected to find latest session")
@@ -264,6 +278,7 @@ func TestScenario_DaemonResumeLatest_PicksUpdatedNotCreated(t *testing.T) {
 
 	// Session A: created first
 	mgrA := NewManager(sessDir)
+	defer mgrA.Close()
 	sA := mgrA.NewSession()
 	sA.Title = "Session A (older)"
 	sA.Messages = append(sA.Messages,
@@ -275,6 +290,7 @@ func TestScenario_DaemonResumeLatest_PicksUpdatedNotCreated(t *testing.T) {
 
 	// Session B: created second (newer CreatedAt)
 	mgrB := NewManager(sessDir)
+	defer mgrB.Close()
 	sB := mgrB.NewSession()
 	sB.Title = "Session B (newer created)"
 	sB.Messages = append(sB.Messages,
@@ -286,6 +302,7 @@ func TestScenario_DaemonResumeLatest_PicksUpdatedNotCreated(t *testing.T) {
 
 	// Update session A (now has latest UpdatedAt despite older CreatedAt)
 	mgrA2 := NewManager(sessDir)
+	defer mgrA2.Close()
 	resumedA, _ := mgrA2.Resume(sA.ID)
 	resumedA.Messages = append(resumedA.Messages,
 		client.Message{Role: "assistant", Content: client.NewTextContent("reply to A")},
@@ -294,6 +311,7 @@ func TestScenario_DaemonResumeLatest_PicksUpdatedNotCreated(t *testing.T) {
 
 	// ResumeLatest should pick A (most recent UpdatedAt), not B (most recent CreatedAt)
 	mgrFinal := NewManager(sessDir)
+	defer mgrFinal.Close()
 	latest, _ := mgrFinal.ResumeLatest()
 	if latest == nil {
 		t.Fatal("expected to find session")

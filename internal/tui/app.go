@@ -59,6 +59,7 @@ type healthCheckMsg struct {
 
 type serverToolsLoadedMsg struct {
 	registry *agent.ToolRegistry
+	cleanup  func()
 	err      error
 }
 
@@ -119,6 +120,8 @@ type Model struct {
 	serverToolErr        error // non-nil if server tools failed to load
 	customCommands       map[string]string // name → prompt content from commands/*.md
 	bypassPermissions    bool
+	agentOverride        *agents.Agent  // per-agent override for re-application after async tool load
+	remoteCleanup        func()         // cleanup for MCP connections from async load
 	cancelRun            context.CancelFunc // cancels the running agent loop
 	// Tool result display
 	pendingToolName   string
@@ -231,10 +234,8 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		}
 	}
 
-	reg, toolCleanup, _ := tools.RegisterAll(gateway, cfg, agentOverride)
-
-	// Resolve scoped MCP context
-	scopedMCPCtx := tools.ResolveMCPContext(cfg, agentOverride)
+	// Local tools only (fast, sync) — MCP + gateway loaded async in Init
+	reg, toolCleanup := tools.RegisterLocalTools(cfg)
 
 	hookRunner := hooks.NewHookRunner(cfg.Hooks)
 	loop := agent.NewAgentLoop(gateway, reg, cfg.ModelTier, shannonDir, cfg.Agent.MaxIterations, cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
@@ -254,10 +255,27 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 	if cfg.Agent.ReasoningEffort != "" {
 		loop.SetReasoningEffort(cfg.Agent.ReasoningEffort)
 	}
+	// Per-agent model config overrides
+	if agentOverride != nil && agentOverride.Config != nil && agentOverride.Config.Agent != nil {
+		ac := agentOverride.Config.Agent
+		if ac.Model != nil {
+			loop.SetSpecificModel(*ac.Model)
+		}
+		if ac.MaxIterations != nil {
+			loop.SetMaxIterations(*ac.MaxIterations)
+		}
+		if ac.Temperature != nil {
+			loop.SetTemperature(*ac.Temperature)
+		}
+		if ac.MaxTokens != nil {
+			loop.SetMaxTokens(*ac.MaxTokens)
+		}
+		if ac.ContextWindow != nil {
+			loop.SetContextWindow(*ac.ContextWindow)
+		}
+	}
 	if agentOverride != nil {
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx)
-	} else if scopedMCPCtx != "" {
-		loop.SetMCPContext(scopedMCPCtx)
+		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, "")
 	}
 	loop.SetEnableStreaming(true) // streaming enabled but deltas are suppressed — only final text rendered
 
@@ -288,6 +306,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		auditor:        auditor,
 		hookRunner:     hookRunner,
 		customCommands: customCmds,
+		agentOverride:  agentOverride,
 	}
 
 	return m
@@ -314,15 +333,22 @@ func (m *Model) loadServerTools() tea.Cmd {
 			return serverToolsLoadedMsg{err: fmt.Errorf("tool registry not initialized")}
 		}
 
-		reg := m.toolRegistry.Clone()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		err := tools.RegisterServerTools(ctx, m.gateway, reg)
-		// Cloud delegation tool (uses same gateway, agent forwarding not needed — loop already has override)
-		tools.RegisterCloudDelegate(reg, m.gateway, m.cfg, nil, "", "")
+		reg, cleanup, err := tools.CompleteRegistration(ctx, m.gateway, m.cfg, m.toolRegistry, m.agentOverride)
+
+		// Cloud delegation tool
+		var cloudAgentName, cloudAgentPrompt string
+		if m.agentOverride != nil {
+			cloudAgentName = m.agentOverride.Name
+			cloudAgentPrompt = m.agentOverride.Prompt
+		}
+		tools.RegisterCloudDelegate(reg, m.gateway, m.cfg, nil, cloudAgentName, cloudAgentPrompt)
+
 		return serverToolsLoadedMsg{
 			registry: reg,
+			cleanup:  cleanup,
 			err:      err,
 		}
 	}
@@ -369,6 +395,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessions.Save()
 			if m.toolCleanup != nil {
 				m.toolCleanup()
+			}
+			if m.remoteCleanup != nil {
+				m.remoteCleanup()
 			}
 			return m, tea.Quit
 		case tea.KeyEscape:
@@ -561,12 +590,14 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case serverToolsLoadedMsg:
+		if msg.cleanup != nil {
+			m.remoteCleanup = msg.cleanup
+		}
 		if msg.err != nil {
 			m.serverToolErr = msg.err
 			if m.headerDone {
 				m.appendOutput(fmt.Sprintf("  %v", msg.err))
 			}
-			return m, nil
 		}
 		if msg.registry != nil {
 			m.toolRegistry = msg.registry
@@ -587,9 +618,40 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cfg.Agent.ReasoningEffort != "" {
 				m.agentLoop.SetReasoningEffort(m.cfg.Agent.ReasoningEffort)
 			}
+			// Per-agent model config overrides
+			if m.agentOverride != nil && m.agentOverride.Config != nil && m.agentOverride.Config.Agent != nil {
+				ac := m.agentOverride.Config.Agent
+				if ac.Model != nil {
+					m.agentLoop.SetSpecificModel(*ac.Model)
+				}
+				if ac.MaxIterations != nil {
+					m.agentLoop.SetMaxIterations(*ac.MaxIterations)
+				}
+				if ac.Temperature != nil {
+					m.agentLoop.SetTemperature(*ac.Temperature)
+				}
+				if ac.MaxTokens != nil {
+					m.agentLoop.SetMaxTokens(*ac.MaxTokens)
+				}
+				if ac.ContextWindow != nil {
+					m.agentLoop.SetContextWindow(*ac.ContextWindow)
+				}
+			}
 			m.agentLoop.SetBypassPermissions(m.bypassPermissions)
 			m.agentLoop.SetEnableStreaming(true)
-			m.serverToolErr = nil
+			// Re-apply agent override (prompt, memory, MCP context)
+			if m.agentOverride != nil {
+				scopedMCPCtx := tools.ResolveMCPContext(m.cfg, m.agentOverride)
+				m.agentLoop.SwitchAgent(m.agentOverride.Prompt, m.agentOverride.Memory, nil, scopedMCPCtx)
+			} else {
+				mcpCtx := tools.ResolveMCPContext(m.cfg)
+				if mcpCtx != "" {
+					m.agentLoop.SetMCPContext(mcpCtx)
+				}
+			}
+			if msg.err == nil {
+				m.serverToolErr = nil
+			}
 		}
 		return m, nil
 
@@ -920,6 +982,9 @@ func (m *Model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		m.sessions.Save()
 		if m.toolCleanup != nil {
 			m.toolCleanup()
+		}
+		if m.remoteCleanup != nil {
+			m.remoteCleanup()
 		}
 		return m, tea.Quit
 	case "/help":

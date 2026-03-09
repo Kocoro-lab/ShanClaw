@@ -49,6 +49,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("GET /status", s.handleStatus)
 	mux.HandleFunc("GET /agents", s.handleAgents)
 	mux.HandleFunc("GET /sessions", s.handleSessions)
+	mux.HandleFunc("GET /sessions/search", s.handleSessionSearch)
 	mux.HandleFunc("POST /message", s.handleMessage)
 	mux.HandleFunc("POST /shutdown", s.handleShutdown)
 
@@ -140,8 +141,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	sessDir := s.deps.SessionCache.SessionsDir(agentName)
-	mgr := session.NewManager(sessDir)
+	mgr := s.deps.SessionCache.GetOrCreate(agentName)
 	summaries, err := mgr.List()
 	if err != nil {
 		// If the directory doesn't exist, return empty list.
@@ -156,6 +156,38 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		summaries = []session.SessionSummary{}
 	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"sessions": summaries})
+}
+
+func (s *Server) handleSessionSearch(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if s.deps == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"results": []interface{}{}})
+		return
+	}
+
+	agentName := r.URL.Query().Get("agent")
+	if agentName != "" {
+		if err := agents.ValidateAgentName(agentName); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+	}
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		http.Error(w, `{"error":"q parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	mgr := s.deps.SessionCache.GetOrCreate(agentName)
+	results, err := mgr.Search(query, 20)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+	if results == nil {
+		results = []session.SearchResult{}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"results": results})
 }
 
 // handleMessage runs an agent turn via POST. Supports synchronous JSON and SSE streaming.

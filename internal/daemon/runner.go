@@ -12,7 +12,6 @@ import (
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/hooks"
-	"github.com/Kocoro-lab/shan/internal/session"
 	"github.com/Kocoro-lab/shan/internal/tools"
 )
 
@@ -108,16 +107,12 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	deps.SessionCache.Lock(agentName)
 	defer deps.SessionCache.Unlock(agentName)
 
-	var sessMgr *session.Manager
+	sessMgr := deps.SessionCache.GetOrCreate(agentName)
 	if req.SessionID != "" {
-		// Resume a specific session by ID.
-		sessDir := deps.SessionCache.SessionsDir(agentName)
-		sessMgr = session.NewManager(sessDir)
+		// Resume a specific session by ID (reuses cached manager to avoid DB handle leak).
 		if _, err := sessMgr.Resume(req.SessionID); err != nil {
 			return nil, fmt.Errorf("session not found: %s", req.SessionID)
 		}
-	} else {
-		sessMgr = deps.SessionCache.GetOrCreate(agentName)
 	}
 	sess := sessMgr.Current()
 	history := sess.Messages

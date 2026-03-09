@@ -79,6 +79,15 @@ func (sc *SessionCache) getEntry(agent string) *agentEntry {
 	return entry
 }
 
+// CloseAll closes all session managers in the cache.
+func (sc *SessionCache) CloseAll() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for _, entry := range sc.agents {
+		entry.mgr.Close()
+	}
+}
+
 // SessionsDir returns the sessions directory for the given agent.
 // Empty agent name returns the default sessions directory.
 func (sc *SessionCache) SessionsDir(agent string) string {

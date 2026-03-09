@@ -131,6 +131,7 @@ var daemonStartCmd = &cobra.Command{
 
 		log.Printf("daemon: connecting to %s", wsEndpoint)
 		wsClient.RunWithReconnect(ctx)
+		sessionCache.CloseAll()
 		return nil
 	},
 }

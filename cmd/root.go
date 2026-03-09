@@ -209,6 +209,7 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 		sessDir = filepath.Join(shannonDir, "sessions")
 	}
 	sessMgr := session.NewManager(sessDir)
+	tools.RegisterSessionSearch(reg, sessMgr)
 	sess := sessMgr.NewSession()
 	sess.Title = sessionTitleFromQuery(query)
 
@@ -225,6 +226,7 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	if saveErr := sessMgr.Save(); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to save session: %v\n", saveErr)
 	}
+	sessMgr.Close()
 
 	fmt.Print(renderMarkdown(result))
 	usageLine := fmt.Sprintf("\n[tokens: %d | cost: $%.4f", usage.TotalTokens, usage.CostUSD)

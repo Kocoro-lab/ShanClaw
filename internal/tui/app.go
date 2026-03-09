@@ -237,6 +237,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 
 	// Local tools only (fast, sync) — MCP + gateway loaded async in Init
 	reg, toolCleanup := tools.RegisterLocalTools(cfg)
+	tools.RegisterSessionSearch(reg, sessMgr)
 
 	hookRunner := hooks.NewHookRunner(cfg.Hooks)
 	loop := agent.NewAgentLoop(gateway, reg, cfg.ModelTier, shannonDir, cfg.Agent.MaxIterations, cfg.Tools.ResultTruncation, cfg.Tools.ArgsTruncation, &cfg.Permissions, auditor, hookRunner)
@@ -299,7 +300,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		"quit": true, "exit": true, "help": true, "clear": true,
 		"sessions": true, "session": true, "model": true, "config": true,
 		"setup": true, "update": true, "copy": true, "research": true,
-		"swarm": true,
+		"swarm": true, "search": true,
 	}
 
 	// Merge agent-scoped commands and prompt-type skills
@@ -428,6 +429,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			m.hookRunner.RunStop(context.Background(), "")
 			m.sessions.Save()
+			m.sessions.Close()
 			if m.toolCleanup != nil {
 				m.toolCleanup()
 			}
@@ -1015,6 +1017,7 @@ func (m *Model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 	case "/quit", "/exit":
 		m.hookRunner.RunStop(context.Background(), "")
 		m.sessions.Save()
+		m.sessions.Close()
 		if m.toolCleanup != nil {
 			m.toolCleanup()
 		}
@@ -1102,6 +1105,24 @@ func (m *Model) handleSlashCommand(input string) (tea.Model, tea.Cmd) {
 		return m.handleResearch(parts[1:])
 	case "/swarm":
 		return m.handleSwarm(parts[1:])
+	case "/search":
+		if len(parts) < 2 {
+			m.appendOutput("Usage: /search <query>")
+		} else {
+			query := strings.Join(parts[1:], " ")
+			results, err := m.sessions.Search(query, 20)
+			if err != nil {
+				m.appendOutput(fmt.Sprintf("Search error: %v", err))
+			} else if len(results) == 0 {
+				m.appendOutput("No matching sessions found.")
+			} else {
+				m.appendOutput(fmt.Sprintf("Found %d matches:", len(results)))
+				for i, r := range results {
+					m.appendOutput(fmt.Sprintf("  %d. [%s] %s (%s): %s",
+						i+1, r.CreatedAt.Format("Jan 02"), r.SessionTitle, r.Role, r.Snippet))
+				}
+			}
+		}
 	default:
 		// Check custom commands
 		cmdName := strings.TrimPrefix(cmd, "/")
@@ -1366,6 +1387,7 @@ Commands:
   /config                        Show configuration
   /setup                         Reconfigure endpoint & API key
   /sessions                      List saved sessions
+  /search <query>                Search session history
   /session new                   Start new session
   /session resume <id>           Resume a saved session
   /model [small|medium|large]    Switch model tier
@@ -1518,6 +1540,7 @@ var allSlashCommands = []slashCmd{
 	{"/config", "Show configuration"},
 	{"/setup", "Reconfigure endpoint & API key"},
 	{"/sessions", "List saved sessions"},
+	{"/search", "Search session history"},
 	{"/session", "new | resume <n>"},
 	{"/clear", "Clear screen"},
 	{"/update", "Check for updates"},

@@ -91,30 +91,31 @@ func RegisterServerTools(ctx context.Context, gw *client.GatewayClient, reg *age
 	return nil
 }
 
-// RegisterAll registers local tools, connects MCP servers, and then fetches
-// server-side tools from the gateway. Local tools take priority, then MCP, then gateway.
-// If agentDef is non-nil, tool filtering and MCP scoping are applied per-agent.
-// The returned cleanup function must be called on shutdown.
-func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agents.Agent) (*agent.ToolRegistry, func(), error) {
-	reg, baseCleanup := RegisterLocalTools(cfg)
-
-	// Apply agent tool filter (allow/deny list)
-	var toolFilter *agents.AgentToolsFilter
-	if len(agentDef) > 0 && agentDef[0] != nil && agentDef[0].Config != nil {
-		toolFilter = agentDef[0].Config.Tools
+// ApplyToolFilter applies the agent's tool allow/deny filter to a registry.
+// Returns a new filtered registry, or the original if no filter applies.
+func ApplyToolFilter(reg *agent.ToolRegistry, agentDef ...*agents.Agent) *agent.ToolRegistry {
+	if len(agentDef) == 0 || agentDef[0] == nil || agentDef[0].Config == nil || agentDef[0].Config.Tools == nil {
+		return reg
 	}
-	if toolFilter != nil {
-		if len(toolFilter.Allow) > 0 {
-			reg = reg.FilterByAllow(toolFilter.Allow)
-		} else if len(toolFilter.Deny) > 0 {
-			reg = reg.FilterByDeny(toolFilter.Deny)
-		}
+	f := agentDef[0].Config.Tools
+	if len(f.Allow) > 0 {
+		return reg.FilterByAllow(f.Allow)
 	}
+	if len(f.Deny) > 0 {
+		return reg.FilterByDeny(f.Deny)
+	}
+	return reg
+}
 
-	// Resolve effective MCP servers (global vs agent-scoped)
+// CompleteRegistration connects MCP servers and gateway tools on top of a base
+// local-only registry, then applies per-agent tool filtering. The filter runs
+// AFTER all tool sources are registered so it applies to MCP and gateway tools too.
+// The returned cleanup function closes MCP connections.
+func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *config.Config, baseReg *agent.ToolRegistry, agentDef ...*agents.Agent) (*agent.ToolRegistry, func(), error) {
+	reg := baseReg.Clone()
+
 	mcpServers := resolveMCPServers(cfg, agentDef...)
 
-	// MCP server tools (best-effort)
 	var mcpMgr *mcp.ClientManager
 	if len(mcpServers) > 0 {
 		mcpMgr = mcp.NewClientManager()
@@ -127,7 +128,7 @@ func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agen
 		for _, t := range mcpTools {
 			if _, exists := reg.Get(t.Tool.Name); exists {
 				fmt.Fprintf(os.Stderr, "MCP: skipping %s/%s (local tool takes priority)\n", t.ServerName, t.Tool.Name)
-				continue // local tool takes priority
+				continue
 			}
 			reg.Register(NewMCPTool(t.ServerName, t.Tool, mcpMgr))
 			servers[t.ServerName] = true
@@ -138,24 +139,38 @@ func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agen
 		}
 	}
 
-	// Gateway server tools (best-effort)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
 	err := RegisterServerTools(ctx, gw, reg)
 
+	// Apply tool filter AFTER all sources are registered
+	reg = ApplyToolFilter(reg, agentDef...)
+
 	cleanup := func() {
-		baseCleanup()
 		if mcpMgr != nil {
 			mcpMgr.Close()
 		}
 	}
 
-	if err != nil {
-		return reg, cleanup, err
+	return reg, cleanup, err
+}
+
+// RegisterAll registers local tools, connects MCP servers, and then fetches
+// server-side tools from the gateway. Local tools take priority, then MCP, then gateway.
+// If agentDef is non-nil, tool filtering and MCP scoping are applied per-agent.
+// The returned cleanup function must be called on shutdown.
+func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agents.Agent) (*agent.ToolRegistry, func(), error) {
+	reg, baseCleanup := RegisterLocalTools(cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	reg, remoteCleanup, err := CompleteRegistration(ctx, gw, cfg, reg, agentDef...)
+
+	cleanup := func() {
+		baseCleanup()
+		remoteCleanup()
 	}
 
-	return reg, cleanup, nil
+	return reg, cleanup, err
 }
 
 // resolveMCPServers determines which MCP servers to connect based on agent config.

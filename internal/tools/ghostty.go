@@ -102,19 +102,14 @@ type ghosttyArgs struct {
 func (t *GhosttyTool) Info() agent.ToolInfo {
 	return agent.ToolInfo{
 		Name: "ghostty",
-		Description: "Control Ghostty terminal (macOS only, via AppleScript). " +
-			"Actions: new_tab (open tab, optional command/title), " +
-			"new_split (direction: right|down, optional command/title), " +
-			"send_input (target: tab title, text: keystrokes to send), " +
-			"list_tabs (show tracked tabs). " +
-			"Ghostty AppleScript API reference — object hierarchy: application > windows > tabs > terminals. " +
-			"Create: 'set cfg to new surface configuration' then 'new window with configuration cfg' or 'new tab in win with configuration cfg'. " +
-			"Split: 'split <terminal> direction right|left|down|up with configuration cfg'. " +
-			"Input: 'input text \"...\" to <terminal>' then 'send key \"enter\" to <terminal>'. " +
-			"References: 'set win to front window', 'set t to focused terminal of selected tab of win'. " +
-			"Tab title: 'tell selected tab of win' then 'set title to \"name\"'. " +
-			"Focus: 'focus <terminal>'. Close: not via AppleScript, use File > Close menu. " +
-			"IMPORTANT: Do NOT use 'make new window/tab', 'write text', or 'set name of' — those are NOT valid Ghostty AppleScript.",
+		Description: "Open and control Ghostty terminal windows (macOS only). " +
+			"Use this instead of bash when the user wants a visible terminal they can interact with — " +
+			"e.g. running a dev server, tailing logs, monitoring processes, or setting up a multi-pane workspace. " +
+			"Use bash for commands where you only need the output (grep, cat, go build, etc.). " +
+			"Actions: new_tab (open a new terminal tab, optional command/title), " +
+			"new_split (open a split pane, direction: right|down, optional command/title), " +
+			"send_input (send keystrokes to a tracked tab by title), " +
+			"list_tabs (show all tracked tabs).",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

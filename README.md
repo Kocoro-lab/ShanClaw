@@ -176,6 +176,18 @@ shan -y "navigate to waylandz.com and take a browser screenshot"
 shan -y "go to wikipedia.org, search for 'Shannon entropy', and summarize the page"
 ```
 
+**Ghostty Terminal** — `ghostty` (requires [Ghostty](https://ghostty.org) >= 1.3.0)
+```bash
+# In TUI — agent opens and controls Ghostty terminals
+"open a new terminal and run top"
+"open a new split to the right running go test ./... -v and tell me the results"
+"set up my dev environment: open a new terminal running the server, and a new split tailing logs"
+
+# CLI — open one Ghostty window per agent
+shan ghostty workspace                    # all agents
+shan ghostty workspace writer ops-bot     # specific agents
+```
+
 **HTTP Requests** — `http`
 ```bash
 shan "check if https://api.github.com is responding"
@@ -198,6 +210,7 @@ shan "show all tables in the database"
 - **Accessibility permission** granted in System Settings > Privacy & Security > Accessibility (for `accessibility` tool)
 - **Python 3 + pyobjc-framework-Quartz** (optional, for `computer` tool mouse/click control)
 - **Chrome** (optional, for `browser` tool — chromedp with isolated profile)
+- **[Ghostty](https://ghostty.org) >= 1.3.0** (optional, for `ghostty` tool — terminal tabs, splits, input)
 
 ## CLI Usage
 

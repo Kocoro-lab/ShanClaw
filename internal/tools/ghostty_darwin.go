@@ -188,10 +188,11 @@ func ghosttyWorkspaceScript(shanBinary string, agentNames []string) string {
 
 	for i, name := range agentNames {
 		if i > 0 {
-			sb.WriteString("\tdelay 0.3\n")
+			sb.WriteString("\tdelay 1\n")
 		}
 		sb.WriteString("\tset cfg to new surface configuration\n")
 		sb.WriteString("\tset win to new window with configuration cfg\n")
+		sb.WriteString("\tdelay 0.5\n")
 		sb.WriteString("\tset t to focused terminal of selected tab of win\n")
 		sb.WriteString(fmt.Sprintf("\ttell selected tab of win\n"))
 		sb.WriteString(fmt.Sprintf("\t\tset title to \"%s\"\n", name))

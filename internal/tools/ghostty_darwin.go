@@ -3,16 +3,47 @@ package tools
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
-// ghosttyAvailable checks if Ghostty.app is installed on this machine.
+const minGhosttyVersion = "1.3.0"
+
+// ghosttyAvailable checks if Ghostty.app is installed and >= 1.3.0.
 func ghosttyAvailable() bool {
 	out, err := exec.Command("mdfind", "kMDItemCFBundleIdentifier == 'com.mitchellh.ghostty'").CombinedOutput()
+	if err != nil || strings.TrimSpace(string(out)) == "" {
+		return false
+	}
+	appPath := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	ver, err := exec.Command("defaults", "read", appPath+"/Contents/Info.plist", "CFBundleShortVersionString").CombinedOutput()
 	if err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) != ""
+	return compareVersions(strings.TrimSpace(string(ver)), minGhosttyVersion) >= 0
+}
+
+// compareVersions compares two semver-like version strings (a vs b).
+// Returns -1, 0, or 1.
+func compareVersions(a, b string) int {
+	aParts := strings.Split(a, ".")
+	bParts := strings.Split(b, ".")
+	for i := 0; i < len(aParts) || i < len(bParts); i++ {
+		var av, bv int
+		if i < len(aParts) {
+			av, _ = strconv.Atoi(aParts[i])
+		}
+		if i < len(bParts) {
+			bv, _ = strconv.Atoi(bParts[i])
+		}
+		if av < bv {
+			return -1
+		}
+		if av > bv {
+			return 1
+		}
+	}
+	return 0
 }
 
 // execGhosttyScript runs an AppleScript targeting the Ghostty application.
@@ -146,29 +177,21 @@ func SetGhosttyTabAppearance(agentName string) {
 	setTabTitle(agentName)
 }
 
-// ghosttyWorkspaceScript builds an AppleScript that opens a Ghostty window
-// with one tab per agent.
+// ghosttyWorkspaceScript builds an AppleScript that opens one Ghostty window
+// per agent.
 func ghosttyWorkspaceScript(shanBinary string, agentNames []string) string {
 	escaped := strings.ReplaceAll(shanBinary, `"`, `\"`)
 	var sb strings.Builder
 	sb.WriteString("tell application \"Ghostty\"\n")
 	sb.WriteString("\tactivate\n")
-	sb.WriteString("\tset cfg to new surface configuration\n")
+	sb.WriteString("\tdelay 0.5\n")
 
-	// First agent: new window
-	first := agentNames[0]
-	sb.WriteString("\tset win to new window with configuration cfg\n")
-	sb.WriteString("\tset t to focused terminal of selected tab of win\n")
-	sb.WriteString(fmt.Sprintf("\ttell selected tab of win\n"))
-	sb.WriteString(fmt.Sprintf("\t\tset title to \"%s\"\n", first))
-	sb.WriteString("\tend tell\n")
-	sb.WriteString(fmt.Sprintf("\tinput text \"%s --agent %s\" to t\n", escaped, first))
-	sb.WriteString("\tsend key \"enter\" to t\n")
-
-	// Remaining agents: new tabs
-	for _, name := range agentNames[1:] {
+	for i, name := range agentNames {
+		if i > 0 {
+			sb.WriteString("\tdelay 0.3\n")
+		}
 		sb.WriteString("\tset cfg to new surface configuration\n")
-		sb.WriteString("\tset newTab to new tab in win with configuration cfg\n")
+		sb.WriteString("\tset win to new window with configuration cfg\n")
 		sb.WriteString("\tset t to focused terminal of selected tab of win\n")
 		sb.WriteString(fmt.Sprintf("\ttell selected tab of win\n"))
 		sb.WriteString(fmt.Sprintf("\t\tset title to \"%s\"\n", name))

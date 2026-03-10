@@ -4,6 +4,8 @@ package tools
 
 import "fmt"
 
+const minGhosttyVersion = "1.3.0"
+
 var errNotDarwin = fmt.Errorf("ghostty integration requires macOS")
 
 func ghosttyAvailable() bool                                                   { return false }

@@ -120,7 +120,6 @@ type Model struct {
 	shannonDir    string
 	auditor       *audit.AuditLogger
 	hookRunner    *hooks.HookRunner
-	serverToolErr        error // non-nil if server tools failed to load
 	customCommands       map[string]string // name → prompt content from commands/*.md
 	bypassPermissions    bool
 	agentOverride        *agents.Agent  // per-agent override for re-application after async tool load
@@ -183,9 +182,6 @@ func (m *Model) finishHeaderAnimation() tea.Cmd {
 			m.appendOutput(fmt.Sprintf("  Connected to %s", m.cfg.Endpoint))
 		} else {
 			m.appendOutput(fmt.Sprintf("  Warning: API unreachable at %s", m.cfg.Endpoint))
-		}
-		if m.serverToolErr != nil {
-			m.appendOutput(fmt.Sprintf("  %v", m.serverToolErr))
 		}
 		if m.headerHealth.updateMsg != "" {
 			m.appendOutput(fmt.Sprintf("  %s", m.headerHealth.updateMsg))
@@ -636,12 +632,6 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.cleanup != nil {
 			m.remoteCleanup = msg.cleanup
 		}
-		if msg.err != nil {
-			m.serverToolErr = msg.err
-			if m.headerDone {
-				m.appendOutput(fmt.Sprintf("  %v", msg.err))
-			}
-		}
 		if msg.registry != nil {
 			m.toolRegistry = msg.registry
 			m.agentLoop = agent.NewAgentLoop(m.gateway, msg.registry, m.cfg.ModelTier, m.shannonDir, m.cfg.Agent.MaxIterations, m.cfg.Tools.ResultTruncation, m.cfg.Tools.ArgsTruncation, &m.cfg.Permissions, m.auditor, m.hookRunner)
@@ -692,9 +682,6 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.agentLoop.SetMCPContext(mcpCtx)
 				}
 			}
-			if msg.err == nil {
-				m.serverToolErr = nil
-			}
 		}
 		return m, nil
 
@@ -717,9 +704,6 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendOutput(fmt.Sprintf("  Connected to %s", m.cfg.Endpoint))
 		} else {
 			m.appendOutput(fmt.Sprintf("  Warning: API unreachable at %s", m.cfg.Endpoint))
-		}
-		if m.serverToolErr != nil {
-			m.appendOutput(fmt.Sprintf("  %v", m.serverToolErr))
 		}
 		if msg.updateMsg != "" {
 			m.appendOutput(fmt.Sprintf("  %s", msg.updateMsg))

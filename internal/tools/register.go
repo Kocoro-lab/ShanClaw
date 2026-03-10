@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -122,10 +121,7 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 	var mcpMgr *mcp.ClientManager
 	if len(mcpServers) > 0 {
 		mcpMgr = mcp.NewClientManager()
-		mcpTools, mcpErr := mcpMgr.ConnectAll(context.Background(), mcpServers)
-		if mcpErr != nil && len(mcpTools) == 0 {
-			log.Printf("MCP: %v", mcpErr)
-		}
+		mcpTools, _ := mcpMgr.ConnectAll(context.Background(), mcpServers)
 		for _, t := range mcpTools {
 			if _, exists := reg.Get(t.Tool.Name); exists {
 				continue

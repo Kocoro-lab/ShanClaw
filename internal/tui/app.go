@@ -93,6 +93,16 @@ type toolCallMsg struct {
 	args string
 }
 
+// toolResultMsg is sent from the agent goroutine to deliver tool results safely
+// through the Bubbletea event loop, avoiding direct Model field mutation.
+type toolResultMsg struct {
+	name    string
+	args    string
+	content string
+	isError bool
+	elapsed time.Duration
+}
+
 type toolResultEntry struct {
 	name    string
 	args    string
@@ -138,6 +148,7 @@ type Model struct {
 	lastToolResults    []toolResultEntry
 	toolExpandLevel    int // 0=summary only, 1=compact lines, 2=expanded details
 	// Slash command completion menu
+	slashCommands []slashCmd // built once in New(), includes builtins + custom/agent cmds
 	menuVisible   bool
 	menuIndex     int
 	menuItems     []slashCmd
@@ -290,13 +301,16 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 
 	settings := config.LoadSettings()
 
-	// Load custom commands and add to slash command list
+	// Load custom commands and add to slash command list.
+	// Build a per-instance slice so repeated New() calls don't accumulate into the global.
 	customCmds, _ := instructions.LoadCustomCommands(shannonDir, ".")
 	if customCmds == nil {
 		customCmds = make(map[string]string)
 	}
+	instanceCmds := make([]slashCmd, len(baseSlashCommands))
+	copy(instanceCmds, baseSlashCommands)
 	for name := range customCmds {
-		allSlashCommands = append(allSlashCommands, slashCmd{
+		instanceCmds = append(instanceCmds, slashCmd{
 			cmd:  "/" + name,
 			desc: "Custom command",
 		})
@@ -312,7 +326,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 				continue
 			}
 			customCmds[name] = content
-			allSlashCommands = append(allSlashCommands, slashCmd{
+			instanceCmds = append(instanceCmds, slashCmd{
 				cmd:  "/" + name,
 				desc: "Agent command",
 			})
@@ -320,7 +334,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		for _, s := range agentOverride.Skills {
 			if s.Type == skills.SkillTypePrompt && s.Prompt != "" && !builtinCmds[s.Name] {
 				customCmds[s.Name] = s.Prompt
-				allSlashCommands = append(allSlashCommands, slashCmd{
+				instanceCmds = append(instanceCmds, slashCmd{
 					cmd:  "/" + s.Name,
 					desc: s.Description,
 				})
@@ -346,6 +360,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		customCommands: customCmds,
 		agentOverride:  agentOverride,
 		markdownCache:  make(map[string]string),
+		slashCommands:  instanceCmds,
 	}
 
 	return m
@@ -562,11 +577,17 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == stateApproval {
 			switch msg.String() {
 			case "y", "Y":
-				m.approvalCh <- true
+				select {
+				case m.approvalCh <- true:
+				default:
+				}
 				m.state = stateProcessing
 				return m, nil
 			case "n", "N":
-				m.approvalCh <- false
+				select {
+				case m.approvalCh <- false:
+				default:
+				}
 				m.state = stateProcessing
 				return m, nil
 			}
@@ -737,6 +758,31 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinnerIdx = (m.spinnerIdx + 1) % len(m.spinnerTexts)
 		return m, nil
 
+	case toolResultMsg:
+		toolName := m.pendingToolName
+		toolArgs := m.pendingToolArgs
+		if toolName == "" {
+			toolName = msg.name
+		}
+		if toolArgs == "" {
+			toolArgs = msg.args
+		}
+		if toolName == "think" {
+			dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
+			m.appendOutput(dimStyle.Render(msg.content))
+		} else {
+			m.appendOutput(formatCompactToolResult(toolName, toolArgs, msg.isError, msg.content, msg.elapsed))
+			entry := toolResultEntry{name: toolName, args: toolArgs, content: msg.content, isError: msg.isError, elapsed: msg.elapsed}
+			m.lastToolResults = append(m.lastToolResults, entry)
+			if len(m.lastToolResults) > 20 {
+				m.lastToolResults = m.lastToolResults[1:]
+			}
+		}
+		m.pendingToolName = ""
+		m.pendingToolArgs = ""
+		m.toolExpandLevel = 0
+		return m, nil
+
 	case clipboardResultMsg:
 		if msg.err != nil {
 			m.appendOutput(fmt.Sprintf("Copy failed: %v", msg.err))
@@ -803,7 +849,7 @@ func (m *Model) View() string {
 		if statusBarWidth < 0 {
 			statusBarWidth = 0
 		}
-		sb.WriteString(barStyle.Render(strings.Repeat("─", statusBarWidth)) + rightInfo)
+		sb.WriteString(barStyle.Render(strings.Repeat("─", statusBarWidth)) + rightInfo + "\n")
 	case stateApproval:
 		sb.WriteString(bar)
 		sb.WriteString("\n")
@@ -896,8 +942,8 @@ func (m *Model) loadSessionHistory(sess *session.Session) {
 
 	messages := append([]client.Message(nil), sess.Messages...)
 	width := m.width
-	m.sendOutput(fmt.Sprintf("  Session: %s", sess.Title))
-	m.sendOutput("")
+	m.appendOutput(fmt.Sprintf("  Session: %s", sess.Title))
+	m.appendOutput("")
 
 	if m.program == nil {
 		pm := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("252")).Render(">")
@@ -978,12 +1024,20 @@ func (m *Model) rerenderOutput() tea.Cmd {
 	blocks := make([]outputBlock, len(m.output))
 	copy(blocks, m.output)
 
-	// Re-render markdown blocks at new width
+	// Re-render markdown blocks at new width (always, so future output uses new width).
 	for i, b := range blocks {
 		if b.raw != "" {
 			blocks[i].rendered = m.renderMarkdownCached(b.raw, width)
 			m.output[i].rendered = blocks[i].rendered
 		}
+	}
+
+	// During active streaming new blocks are being appended continuously.
+	// Clearing and reprinting a snapshot would interleave badly with streamed output,
+	// causing duplicated or missing lines. Skip the repaint; the new width will take
+	// effect for all subsequent output naturally.
+	if m.state == stateProcessing {
+		return nil
 	}
 
 	return func() tea.Msg {
@@ -1529,44 +1583,15 @@ func (h *tuiEventHandler) OnToolCall(name string, args string) {
 
 
 func (h *tuiEventHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
-	toolName := h.model.pendingToolName
-	toolArgs := h.model.pendingToolArgs
-	if toolName == "" {
-		toolName = name
+	if h.model.program != nil {
+		h.model.program.Send(toolResultMsg{
+			name:    name,
+			args:    args,
+			content: result.Content,
+			isError: result.IsError,
+			elapsed: elapsed,
+		})
 	}
-	if toolArgs == "" {
-		toolArgs = args
-	}
-
-	// Think tool: show thought content dimmed, no compact tool indicator.
-	if toolName == "think" {
-		dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("243"))
-		h.model.sendOutput(dimStyle.Render(result.Content))
-		h.model.pendingToolName = ""
-		h.model.pendingToolArgs = ""
-		return
-	}
-
-	entry := toolResultEntry{
-		name:    toolName,
-		args:    toolArgs,
-		content: result.Content,
-		isError: result.IsError,
-		elapsed: elapsed,
-	}
-
-	// Flush compact tool indicator to scrollback immediately for progress visibility
-	h.model.sendOutput(formatCompactToolResult(toolName, toolArgs, result.IsError, result.Content, elapsed))
-
-	// Store for Ctrl+O expand
-	h.model.lastToolResults = append(h.model.lastToolResults, entry)
-	if len(h.model.lastToolResults) > 20 {
-		h.model.lastToolResults = h.model.lastToolResults[1:]
-	}
-
-	h.model.pendingToolName = ""
-	h.model.pendingToolArgs = ""
-	h.model.toolExpandLevel = 0
 }
 
 func (h *tuiEventHandler) OnText(text string) {
@@ -1622,7 +1647,7 @@ func copyToClipboard(text string) tea.Cmd {
 	}
 }
 
-var allSlashCommands = []slashCmd{
+var baseSlashCommands = []slashCmd{
 	{"/help", "Show help"},
 	{"/research", "Remote research"},
 	{"/swarm", "Multi-agent swarm"},
@@ -1648,7 +1673,7 @@ func (m *Model) updateMenu() {
 	}
 
 	var matches []slashCmd
-	for _, c := range allSlashCommands {
+	for _, c := range m.slashCommands {
 		if strings.HasPrefix(c.cmd, input) {
 			matches = append(matches, c)
 		}

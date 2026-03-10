@@ -46,6 +46,7 @@ func RegisterLocalTools(cfg *config.Config) (*agent.ToolRegistry, func()) {
 	reg.Register(&ProcessTool{})
 	reg.Register(&AppleScriptTool{})
 	reg.Register(&AccessibilityTool{})
+	reg.Register(&GhosttyTool{tabs: newTabRegistry()})
 
 	browser := &BrowserTool{}
 	reg.Register(browser)

@@ -128,8 +128,10 @@ func currentContext(pid: Int) -> AppContext {
 
     var focused: String? = nil
     var focusedRef: CFTypeRef?
-    if AXUIElementCopyAttributeValue(appRef, "AXFocusedUIElement" as CFString, &focusedRef) == .success {
-        let el = focusedRef as! AXUIElement
+    if AXUIElementCopyAttributeValue(appRef, "AXFocusedUIElement" as CFString, &focusedRef) == .success,
+       let ref = focusedRef {
+        // CFTypeRef is non-nil; cast to AXUIElement (CoreFoundation cast always succeeds)
+        let el = ref as! AXUIElement
         let role = axString(el, "AXRole") ?? ""
         let title = axString(el, "AXTitle") ?? ""
         if !role.isEmpty {

@@ -445,6 +445,8 @@ func (t *AccessibilityTool) annotate(ctx context.Context, args accessibilityArgs
 			}
 		}
 		images = append(images, imgBlock)
+		// Clean up original screenshot temp file
+		os.Remove(screenshotPath)
 	}
 
 	return agent.ToolResult{
@@ -542,8 +544,8 @@ func drawAnnotations(imgPath string, annotations []annotationEntry, screenW, scr
 	}
 
 	block, err := EncodeImage(outFile.Name())
+	os.Remove(outFile.Name()) // clean up temp file after encoding
 	if err != nil {
-		os.Remove(outFile.Name())
 		return agent.ImageBlock{}, err
 	}
 	return block, nil

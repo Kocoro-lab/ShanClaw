@@ -82,7 +82,19 @@ struct InputDriver {
         if hasNonASCII || text.count > 20 {
             // Clipboard paste path — safe for CJK/emoji/long text
             let pasteboard = NSPasteboard.general
-            let oldString = pasteboard.string(forType: .string)
+
+            // Save all pasteboard items (not just string) to preserve files/images/HTML
+            var savedItems: [[NSPasteboard.PasteboardType: Data]] = []
+            for item in pasteboard.pasteboardItems ?? [] {
+                var itemData: [NSPasteboard.PasteboardType: Data] = [:]
+                for type in item.types {
+                    if let data = item.data(forType: type) {
+                        itemData[type] = data
+                    }
+                }
+                if !itemData.isEmpty { savedItems.append(itemData) }
+            }
+
             pasteboard.clearContents()
             guard pasteboard.setString(text, forType: .string) else {
                 return (nil, ErrorInfo(code: -1, message: "Failed to set pasteboard"))
@@ -99,10 +111,21 @@ struct InputDriver {
             }
             // Wait for paste to complete before restoring clipboard
             Thread.sleep(forTimeInterval: 0.1)
+
+            // Restore original pasteboard contents
             pasteboard.clearContents()
-            if let old = oldString {
-                pasteboard.setString(old, forType: .string)
+            if !savedItems.isEmpty {
+                var pbItems: [NSPasteboardItem] = []
+                for itemData in savedItems {
+                    let pbItem = NSPasteboardItem()
+                    for (type, data) in itemData {
+                        pbItem.setData(data, forType: type)
+                    }
+                    pbItems.append(pbItem)
+                }
+                pasteboard.writeObjects(pbItems)
             }
+
             let method = hasNonASCII ? "paste (non-ASCII)" : "paste (long text)"
             return (ActionResult(result: "typed via \(method): \(text)"), nil)
         }

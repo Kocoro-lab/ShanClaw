@@ -1,6 +1,7 @@
 package prompt
 
 import (
+	"runtime"
 	"strings"
 	"time"
 )
@@ -59,13 +60,19 @@ func BuildSystemPrompt(opts PromptOptions) string {
 		sb.WriteString(".")
 	}
 
-	// 5. MCP server context
+	// 5. macOS automation guidance (only on darwin with relevant tools)
+	if guidance := macOSAutomationGuidance(opts.ToolNames); guidance != "" {
+		sb.WriteString("\n\n")
+		sb.WriteString(guidance)
+	}
+
+	// 6. MCP server context
 	if mcp := strings.TrimSpace(opts.MCPContext); mcp != "" {
 		sb.WriteString("\n\n## MCP Server Context\n")
 		sb.WriteString(mcp)
 	}
 
-	// 6. Context
+	// 7. Context
 	contextParts := buildContext(opts.CWD, opts.SessionInfo)
 	if contextParts != "" {
 		sb.WriteString("\n\n## Context\n")
@@ -95,4 +102,33 @@ func truncate(s string, maxChars int) string {
 		return s
 	}
 	return string(r[:maxChars]) + "\n[truncated]"
+}
+
+// macOSAutomationGuidance returns workflow guidance for macOS automation tools,
+// or empty string if not on darwin or no relevant tools are registered.
+func macOSAutomationGuidance(toolNames []string) string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	hasMacTools := false
+	for _, name := range toolNames {
+		if name == "accessibility" || name == "computer" || name == "wait_for" {
+			hasMacTools = true
+			break
+		}
+	}
+	if !hasMacTools {
+		return ""
+	}
+	return `## macOS Automation
+
+When controlling macOS applications:
+
+1. **Orient before acting**: Use accessibility annotate to see what's on screen before clicking. It returns a labeled screenshot with numbered elements.
+2. **Use refs, not coordinates**: After annotate or read_tree, click elements by ref (e.g. ref="e14"). Only use coordinate clicks as a last resort.
+3. **Specify app name**: Always include the app parameter. Use the exact name as shown in the Dock (e.g. "Finder", "Safari", "Google Chrome", "Notes").
+4. **Wait, don't sleep**: After launching apps or navigating, use wait_for instead of bash sleep. Example: wait_for with condition="titleContains" value="Google".
+5. **Browser tool for web content**: For interacting with web page elements, use the browser tool (DOM-level access). Use accessibility only for native macOS UI.
+6. **Focus before typing**: Ensure the target app is frontmost before using computer type/hotkey. Use accessibility click on the target field first.
+7. **CJK/emoji text**: computer type handles Chinese, Japanese, Korean, and emoji automatically via clipboard paste.`
 }

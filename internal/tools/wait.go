@@ -27,7 +27,7 @@ type waitArgs struct {
 func (t *WaitTool) Info() agent.ToolInfo {
 	return agent.ToolInfo{
 		Name:        "wait_for",
-		Description: "Wait for a UI condition to be met. Polls the accessibility tree until the condition is satisfied or timeout. Conditions: elementExists (element matching query/role appears), elementGone (element disappears), titleContains (window title contains value), urlContains (browser URL contains value), titleChanged (window title changes), urlChanged (browser URL changes).",
+		Description: "Wait for a UI condition instead of fixed delays. Use after navigation, app launch, or actions that trigger async changes. Conditions: elementExists, elementGone, titleContains, urlContains, titleChanged, urlChanged. Always use this instead of 'sleep' or 'bash sleep'.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

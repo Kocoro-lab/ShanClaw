@@ -177,14 +177,20 @@ private func findToolbarURLField(in el: AXUIElement) -> AXUIElement? {
 }
 
 /// Resolves an app name to its PID via NSWorkspace.
+/// Retries up to 3 times with short delays for apps that just launched.
 func resolvePID(appName: String) -> Int? {
-    for app in NSWorkspace.shared.runningApplications {
-        if let name = app.localizedName, name.lowercased() == appName.lowercased() {
-            return Int(app.processIdentifier)
+    for attempt in 0..<3 {
+        for app in NSWorkspace.shared.runningApplications {
+            if let name = app.localizedName, name.lowercased() == appName.lowercased() {
+                return Int(app.processIdentifier)
+            }
+            if let bundleName = app.bundleIdentifier?.split(separator: ".").last,
+               bundleName.lowercased() == appName.lowercased() {
+                return Int(app.processIdentifier)
+            }
         }
-        if let bundleName = app.bundleIdentifier?.split(separator: ".").last,
-           bundleName.lowercased() == appName.lowercased() {
-            return Int(app.processIdentifier)
+        if attempt < 2 {
+            Thread.sleep(forTimeInterval: 0.5)
         }
     }
     return nil

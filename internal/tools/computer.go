@@ -104,7 +104,7 @@ func normalizeArgs(args *computerArgs) {
 func (t *ComputerTool) Info() agent.ToolInfo {
 	return agent.ToolInfo{
 		Name:        "computer",
-		Description: "OS-level mouse and keyboard control for macOS. Supports click, type, hotkey, and move actions.",
+		Description: "OS-level mouse and keyboard control for macOS. Use for coordinate-based clicks, typing text (CJK/emoji safe), and keyboard shortcuts. For clicking UI elements, prefer accessibility tool (ref-based) over coordinate clicks. Actions: click, type, hotkey, move, screenshot.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

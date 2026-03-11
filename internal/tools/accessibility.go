@@ -73,7 +73,7 @@ type accessibilityArgs struct {
 func (t *AccessibilityTool) Info() agent.ToolInfo {
 	return agent.ToolInfo{
 		Name:        "accessibility",
-		Description: "Read the macOS accessibility tree and interact with UI elements by reference. Use read_tree to see elements, then click/press/set_value/get_value by ref. Use find to search elements by text/role. Use annotate to get element positions + a screenshot. More reliable than coordinate-based clicking for standard macOS apps.",
+		Description: "Interact with macOS apps via the accessibility tree. Workflow: (1) Use 'annotate' to get a labeled screenshot with numbered elements, (2) click/type by ref. Actions: read_tree, click, press, set_value, get_value, find, scroll, annotate. Always specify 'app' parameter with the exact app name. For web content in browsers, prefer the browser tool instead.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{

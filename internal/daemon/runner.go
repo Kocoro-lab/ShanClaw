@@ -204,10 +204,15 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	}
 	loop.SetHandler(handler)
 
-	// Wire handler to cloud_delegate tool so it can stream events.
+	// Wire handler and agent context to cloud_delegate tool.
 	if ct, ok := baseReg.Get("cloud_delegate"); ok {
 		if cdt, ok := ct.(*tools.CloudDelegateTool); ok {
 			cdt.SetHandler(handler)
+			if agentOverride != nil {
+				cdt.SetAgentContext(agentName, agentOverride.Prompt)
+			} else {
+				cdt.SetAgentContext("", "")
+			}
 		}
 	}
 

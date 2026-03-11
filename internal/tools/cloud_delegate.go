@@ -42,6 +42,13 @@ func (t *CloudDelegateTool) SetHandler(h agent.EventHandler) {
 	t.handler = h
 }
 
+// SetAgentContext updates the agent identity forwarded to Shannon Cloud.
+// Used in daemon mode where the agent isn't known at registration time.
+func (t *CloudDelegateTool) SetAgentContext(name, prompt string) {
+	t.agentName = name
+	t.agentPrompt = prompt
+}
+
 func (t *CloudDelegateTool) Info() agent.ToolInfo {
 	return agent.ToolInfo{
 		Name: "cloud_delegate",

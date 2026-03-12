@@ -100,6 +100,13 @@ func RegisterServerTools(ctx context.Context, gw *client.GatewayClient, reg *age
 	return nil
 }
 
+// SetRegistrySkills updates the use_skill tool in a registry to point to the
+// given skills slice. Returns the skills pointer for the caller to keep in sync.
+// This is safe for concurrent use because it creates a new use_skill tool instance.
+func SetRegistrySkills(reg *agent.ToolRegistry, s []*skills.Skill) {
+	reg.Register(newUseSkillTool(&s))
+}
+
 // ApplyToolFilter applies the agent's tool allow/deny filter to a registry.
 // Returns a new filtered registry, or the original if no filter applies.
 func ApplyToolFilter(reg *agent.ToolRegistry, agentDef ...*agents.Agent) *agent.ToolRegistry {
@@ -155,8 +162,8 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 // server-side tools from the gateway. Local tools take priority, then MCP, then gateway.
 // If agentDef is non-nil, tool filtering and MCP scoping are applied per-agent.
 // The returned cleanup function must be called on shutdown.
-func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agents.Agent) (*agent.ToolRegistry, func(), error) {
-	reg, _, baseCleanup := RegisterLocalTools(cfg)
+func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agents.Agent) (*agent.ToolRegistry, *[]*skills.Skill, func(), error) {
+	reg, skillsPtr, baseCleanup := RegisterLocalTools(cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -168,7 +175,7 @@ func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agen
 		remoteCleanup()
 	}
 
-	return reg, cleanup, err
+	return reg, skillsPtr, cleanup, err
 }
 
 // resolveMCPServers determines which MCP servers to connect based on agent config.

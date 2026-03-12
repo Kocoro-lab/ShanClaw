@@ -29,6 +29,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	"github.com/Kocoro-lab/shan/internal/instructions"
 	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/shan/internal/skills"
 	"github.com/Kocoro-lab/shan/internal/tools"
 	"github.com/Kocoro-lab/shan/internal/update"
 )
@@ -139,6 +140,8 @@ type Model struct {
 	customCommands       map[string]string // name → prompt content from commands/*.md
 	bypassPermissions    bool
 	agentOverride        *agents.Agent  // per-agent override for re-application after async tool load
+	loadedSkills         []*skills.Skill // skills for current agent (survives loop re-creation)
+	skillsPtr            *[]*skills.Skill // pointer into use_skill tool's skills slice
 	remoteCleanup        func()         // cleanup for MCP connections from async load
 	cancelRun            context.CancelFunc // cancels the running agent loop
 	// Tool result display
@@ -253,7 +256,7 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 	}
 
 	// Local tools only (fast, sync) — MCP + gateway loaded async in Init
-	reg, _, toolCleanup := tools.RegisterLocalTools(cfg)
+	reg, skillsPtr, toolCleanup := tools.RegisterLocalTools(cfg)
 	tools.RegisterSessionSearch(reg, sessMgr)
 
 	hookRunner := hooks.NewHookRunner(cfg.Hooks)
@@ -293,8 +296,19 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 			loop.SetContextWindow(*ac.ContextWindow)
 		}
 	}
+	// Load skills (agent-scoped or global) and wire to loop + use_skill tool
+	var loadedSkills []*skills.Skill
 	if agentOverride != nil {
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, "", nil)
+		loadedSkills = agentOverride.Skills
+	} else {
+		loadedSkills, _ = agents.LoadGlobalSkills(config.ShannonDir())
+	}
+	*skillsPtr = loadedSkills
+
+	if agentOverride != nil {
+		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, "", loadedSkills)
+	} else if loadedSkills != nil {
+		loop.SetSkills(loadedSkills)
 	}
 	loop.SetEnableStreaming(true) // streaming enabled but deltas are suppressed — only final text rendered
 
@@ -358,6 +372,8 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 		hookRunner:     hookRunner,
 		customCommands: customCmds,
 		agentOverride:  agentOverride,
+		loadedSkills:   loadedSkills,
+		skillsPtr:      skillsPtr,
 		markdownCache:  make(map[string]string),
 		slashCommands:  instanceCmds,
 	}
@@ -703,11 +719,14 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.agentLoop.SetBypassPermissions(m.bypassPermissions)
 			m.agentLoop.SetEnableStreaming(true)
-			// Re-apply agent override (prompt, memory, MCP context)
+			// Re-apply agent override (prompt, memory, MCP context, skills)
 			if m.agentOverride != nil {
 				scopedMCPCtx := tools.ResolveMCPContext(m.cfg, m.agentOverride)
-				m.agentLoop.SwitchAgent(m.agentOverride.Prompt, m.agentOverride.Memory, nil, scopedMCPCtx, nil)
+				m.agentLoop.SwitchAgent(m.agentOverride.Prompt, m.agentOverride.Memory, nil, scopedMCPCtx, m.loadedSkills)
 			} else {
+				if m.loadedSkills != nil {
+					m.agentLoop.SetSkills(m.loadedSkills)
+				}
 				mcpCtx := tools.ResolveMCPContext(m.cfg)
 				if mcpCtx != "" {
 					m.agentLoop.SetMCPContext(mcpCtx)

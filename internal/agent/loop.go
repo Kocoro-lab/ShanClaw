@@ -283,6 +283,11 @@ func (a *AgentLoop) SwitchAgent(basePrompt, memory string, reg *ToolRegistry, mc
 	a.agentSkills = agentSkills
 }
 
+// SetSkills updates the agent's skill catalog without touching other fields.
+func (a *AgentLoop) SetSkills(s []*skills.Skill) {
+	a.agentSkills = s
+}
+
 func (a *AgentLoop) SetEnableStreaming(enable bool) {
 	a.enableStreaming = enable
 }

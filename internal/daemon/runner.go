@@ -14,6 +14,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/shan/internal/skills"
 	"github.com/Kocoro-lab/shan/internal/tools"
 )
 
@@ -150,6 +151,16 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	if agentOverride != nil {
 		reg = tools.ApplyToolFilter(reg, agentOverride)
 	}
+
+	// Load skills (agent-scoped or global) and wire to registry
+	var loadedSkills []*skills.Skill
+	if agentOverride != nil {
+		loadedSkills = agentOverride.Skills
+	} else {
+		loadedSkills, _ = agents.LoadGlobalSkills(deps.ShannonDir)
+	}
+	tools.SetRegistrySkills(reg, loadedSkills)
+
 	// Always expose local session search for daemon-served agents.
 	// Use the per-agent manager so searches are scoped to that agent's sessions.
 	tools.RegisterSessionSearch(reg, sessMgr)
@@ -163,8 +174,11 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	loop.SetEnableStreaming(false)
 	if agentOverride != nil {
 		scopedMCPCtx := tools.ResolveMCPContext(cfg, agentOverride)
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx, nil)
+		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx, loadedSkills)
 	} else {
+		if loadedSkills != nil {
+			loop.SetSkills(loadedSkills)
+		}
 		scopedMCPCtx := tools.ResolveMCPContext(cfg)
 		if scopedMCPCtx != "" {
 			loop.SetMCPContext(scopedMCPCtx)

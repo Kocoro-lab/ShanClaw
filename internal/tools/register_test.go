@@ -22,7 +22,7 @@ func TestRegisterAll_WithServerTools(t *testing.T) {
 	defer server.Close()
 
 	gw := client.NewGatewayClient(server.URL, "")
-	reg, cleanup, err := RegisterAll(gw, nil)
+	reg, _, cleanup, err := RegisterAll(gw, nil)
 	defer cleanup()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -55,7 +55,7 @@ func TestRegisterAll_ServerUnavailable(t *testing.T) {
 	server.Close()
 
 	gw := client.NewGatewayClient(server.URL, "")
-	reg, cleanup, err := RegisterAll(gw, nil)
+	reg, _, cleanup, err := RegisterAll(gw, nil)
 	defer cleanup()
 	if err == nil {
 		t.Error("expected warning error when server is unavailable")
@@ -88,7 +88,7 @@ func TestRegisterAll_LocalPriority(t *testing.T) {
 	defer server.Close()
 
 	gw := client.NewGatewayClient(server.URL, "")
-	reg, cleanup, err := RegisterAll(gw, nil)
+	reg, _, cleanup, err := RegisterAll(gw, nil)
 	defer cleanup()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

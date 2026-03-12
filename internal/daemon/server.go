@@ -908,7 +908,7 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newReg, newCleanup, regErr := tools.RegisterAll(s.deps.GW, newCfg)
+	newReg, _, newCleanup, regErr := tools.RegisterAll(s.deps.GW, newCfg)
 	if regErr != nil {
 		log.Printf("daemon: reload warning: %v", regErr)
 	}

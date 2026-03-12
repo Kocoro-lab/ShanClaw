@@ -23,6 +23,7 @@ import (
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	mcppkg "github.com/Kocoro-lab/shan/internal/mcp"
 	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/shan/internal/skills"
 	"github.com/Kocoro-lab/shan/internal/tools"
 	"github.com/Kocoro-lab/shan/internal/tui"
 	"github.com/Kocoro-lab/shan/internal/update"
@@ -125,7 +126,7 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	}
 
 	gw := client.NewGatewayClient(cfg.Endpoint, cfg.APIKey)
-	reg, cleanup, serverErr := tools.RegisterAll(gw, cfg, agentOverride)
+	reg, skillsPtr, cleanup, serverErr := tools.RegisterAll(gw, cfg, agentOverride)
 	defer cleanup()
 	if serverErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: %v\n", serverErr)
@@ -196,10 +197,25 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	}
 	loop.SetHandler(&cliEventHandler{autoApprove: autoApprove})
 	loop.SetBypassPermissions(dangerouslySkipPermissions)
+
+	// Load skills (agent-scoped or global) and wire to loop + use_skill tool
+	var loadedSkills []*skills.Skill
 	if agentOverride != nil {
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx, nil)
-	} else if scopedMCPCtx != "" {
-		loop.SetMCPContext(scopedMCPCtx)
+		loadedSkills = agentOverride.Skills
+	} else {
+		loadedSkills, _ = agents.LoadGlobalSkills(config.ShannonDir())
+	}
+	*skillsPtr = loadedSkills
+
+	if agentOverride != nil {
+		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx, loadedSkills)
+	} else {
+		if loadedSkills != nil {
+			loop.SetSkills(loadedSkills)
+		}
+		if scopedMCPCtx != "" {
+			loop.SetMCPContext(scopedMCPCtx)
+		}
 	}
 	// Create session for persistence
 	var sessDir string

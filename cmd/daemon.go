@@ -42,10 +42,11 @@ var daemonStartCmd = &cobra.Command{
 		agentsDir := filepath.Join(shanDir, "agents")
 
 		gw := client.NewGatewayClient(cfg.Endpoint, cfg.APIKey)
-		reg, cleanup, serverErr := tools.RegisterAll(gw, cfg)
+		reg, skillsPtr, cleanup, serverErr := tools.RegisterAll(gw, cfg)
 		if serverErr != nil {
 			log.Printf("Warning: %v", serverErr)
 		}
+		_ = skillsPtr // skills are set per-request in RunAgent
 
 		tools.RegisterCloudDelegate(reg, gw, cfg, nil, "", "") // daemon: agent forwarding per-message not yet supported
 

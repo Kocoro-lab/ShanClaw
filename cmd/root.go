@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,7 +204,11 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	if agentOverride != nil {
 		loadedSkills = agentOverride.Skills
 	} else {
-		loadedSkills, _ = agents.LoadGlobalSkills(config.ShannonDir())
+		var err error
+		loadedSkills, err = agents.LoadGlobalSkills(config.ShannonDir())
+		if err != nil {
+			log.Printf("WARNING: failed to load global skills: %v", err)
+		}
 	}
 	*skillsPtr = loadedSkills
 

@@ -157,7 +157,11 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	if agentOverride != nil {
 		loadedSkills = agentOverride.Skills
 	} else {
-		loadedSkills, _ = agents.LoadGlobalSkills(deps.ShannonDir)
+		var err error
+		loadedSkills, err = agents.LoadGlobalSkills(deps.ShannonDir)
+		if err != nil {
+			log.Printf("WARNING: failed to load global skills: %v", err)
+		}
 	}
 	tools.SetRegistrySkills(reg, loadedSkills)
 

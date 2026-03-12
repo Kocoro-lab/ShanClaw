@@ -133,25 +133,44 @@ func DeleteAgentCommand(agentsDir, agentName, cmdName string) error {
 	return os.Remove(filepath.Join(agentsDir, agentName, "commands", cmdName+".md"))
 }
 
+// skillFrontmatter is the YAML frontmatter structure for SKILL.md files.
+// Must stay in sync with internal/skills/loader.go skillFrontmatter.
+type skillFrontmatter struct {
+	Name          string            `yaml:"name"`
+	Description   string            `yaml:"description"`
+	License       string            `yaml:"license,omitempty"`
+	Compatibility string            `yaml:"compatibility,omitempty"`
+	Metadata      map[string]string `yaml:"metadata,omitempty"`
+	AllowedTools  string            `yaml:"allowed-tools,omitempty"`
+}
+
 // WriteAgentSkill writes a skill as a SKILL.md file with YAML frontmatter.
+// Uses proper YAML marshalling to handle special characters in values.
 func WriteAgentSkill(agentsDir, agentName string, skill *skills.Skill) error {
 	dir := filepath.Join(agentsDir, agentName, "skills", skill.Name)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	var buf strings.Builder
-	buf.WriteString("---\n")
-	buf.WriteString("name: " + skill.Name + "\n")
-	buf.WriteString("description: " + skill.Description + "\n")
-	if skill.License != "" {
-		buf.WriteString("license: " + skill.License + "\n")
-	}
-	if skill.Compatibility != "" {
-		buf.WriteString("compatibility: " + skill.Compatibility + "\n")
+
+	fm := skillFrontmatter{
+		Name:          skill.Name,
+		Description:   skill.Description,
+		License:       skill.License,
+		Compatibility: skill.Compatibility,
+		Metadata:      skill.Metadata,
 	}
 	if len(skill.AllowedTools) > 0 {
-		buf.WriteString("allowed-tools: " + strings.Join(skill.AllowedTools, " ") + "\n")
+		fm.AllowedTools = strings.Join(skill.AllowedTools, " ")
 	}
+
+	fmBytes, err := yaml.Marshal(fm)
+	if err != nil {
+		return fmt.Errorf("marshal frontmatter: %w", err)
+	}
+
+	var buf strings.Builder
+	buf.WriteString("---\n")
+	buf.Write(fmBytes)
 	buf.WriteString("---\n\n")
 	buf.WriteString(skill.Prompt)
 	if !strings.HasSuffix(skill.Prompt, "\n") {

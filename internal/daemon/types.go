@@ -22,6 +22,7 @@ const (
 const (
 	MsgTypeApprovalRequest  = "approval_request"
 	MsgTypeApprovalResponse = "approval_response"
+	MsgTypeApprovalResolved = "approval_resolved"
 )
 
 // ApprovalRequest is sent by daemon when a tool needs user approval.
@@ -36,8 +37,16 @@ type ApprovalRequest struct {
 
 // ApprovalResponse is received from the client (via Cloud relay).
 type ApprovalResponse struct {
-	RequestID string           `json:"request_id"`
-	Decision  ApprovalDecision `json:"decision"` // "allow", "deny", "always_allow"
+	RequestID  string           `json:"request_id"`
+	Decision   ApprovalDecision `json:"decision"`    // "allow", "deny", "always_allow"
+	ResolvedBy string           `json:"resolved_by,omitempty"` // populated by Cloud
+}
+
+// ApprovalResolvedPayload is sent daemon→Cloud when Ptfrog resolves first.
+type ApprovalResolvedPayload struct {
+	RequestID  string           `json:"request_id"`
+	Decision   ApprovalDecision `json:"decision"`
+	ResolvedBy string           `json:"resolved_by"` // "ptfrog", "slack", "line"
 }
 
 // Channel types

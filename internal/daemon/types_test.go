@@ -77,6 +77,51 @@ func TestDaemonMessage_MarshalReply(t *testing.T) {
 	}
 }
 
+func TestApprovalResolvedPayload_Serialization(t *testing.T) {
+	p := ApprovalResolvedPayload{
+		RequestID:  "apr_abc123",
+		Decision:   DecisionAllow,
+		ResolvedBy: "ptfrog",
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ApprovalResolvedPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.RequestID != "apr_abc123" {
+		t.Errorf("request_id = %q, want %q", decoded.RequestID, "apr_abc123")
+	}
+	if decoded.Decision != DecisionAllow {
+		t.Errorf("decision = %q, want %q", decoded.Decision, DecisionAllow)
+	}
+	if decoded.ResolvedBy != "ptfrog" {
+		t.Errorf("resolved_by = %q, want %q", decoded.ResolvedBy, "ptfrog")
+	}
+}
+
+func TestApprovalResponse_ResolvedByOmitEmpty(t *testing.T) {
+	resp := ApprovalResponse{RequestID: "apr_test", Decision: DecisionDeny}
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]interface{}
+	json.Unmarshal(data, &decoded)
+	if _, ok := decoded["resolved_by"]; ok {
+		t.Error("resolved_by should be omitted when empty")
+	}
+
+	resp.ResolvedBy = "slack"
+	data, _ = json.Marshal(resp)
+	json.Unmarshal(data, &decoded)
+	if decoded["resolved_by"] != "slack" {
+		t.Errorf("resolved_by = %v, want %q", decoded["resolved_by"], "slack")
+	}
+}
+
 func TestIsSystemChannel(t *testing.T) {
 	if !IsSystemChannel(ChannelSystem) {
 		t.Error("system channel not detected")

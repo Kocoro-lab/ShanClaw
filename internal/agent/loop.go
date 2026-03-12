@@ -196,9 +196,9 @@ type AgentLoop struct {
 	temperature       float64
 	specificModel   string
 	agentBasePrompt string
-	agentMemory     string
 	agentSkills     []*skills.Skill
 	contextWindow   int
+	memoryDir       string // directory containing MEMORY.md; re-read each Run(), write-before-compact target
 }
 
 func NewAgentLoop(gw *client.GatewayClient, tools *ToolRegistry, modelTier string, shannonDir string, maxIter int, resultTrunc int, argsTrunc int, perms *permissions.PermissionsConfig, auditor *audit.AuditLogger, hookRunner *hooks.HookRunner) *AgentLoop {
@@ -270,12 +270,21 @@ func (a *AgentLoop) SetMaxIterations(n int) {
 	a.maxIter = n
 }
 
-// SwitchAgent applies full per-agent scoping: prompt, memory, tool registry,
+// SetMemoryDir sets the directory containing MEMORY.md for write-before-compact.
+// For default agent: ~/.shannon/memory/
+// For named agents: ~/.shannon/agents/<name>/
+func (a *AgentLoop) SetMemoryDir(dir string) {
+	a.memoryDir = dir
+}
+
+// SwitchAgent applies full per-agent scoping: prompt, memory directory, tool registry,
 // and MCP context. Pass a new ToolRegistry and MCP context string built from
 // the agent's scoped MCP servers. If reg is nil, the existing registry is kept.
-func (a *AgentLoop) SwitchAgent(basePrompt, memory string, reg *ToolRegistry, mcpCtx string, agentSkills []*skills.Skill) {
+// memoryDir is the directory containing MEMORY.md — re-read from disk each Run()
+// to pick up writes from the agent or write-before-compact.
+func (a *AgentLoop) SwitchAgent(basePrompt string, memoryDir string, reg *ToolRegistry, mcpCtx string, agentSkills []*skills.Skill) {
 	a.agentBasePrompt = basePrompt
-	a.agentMemory = memory
+	a.memoryDir = memoryDir
 	if reg != nil {
 		a.tools = reg
 	}
@@ -315,16 +324,20 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	}
 
 	cwd, _ := os.Getwd()
-	memory, _ := instructions.LoadMemory(a.shannonDir, 200)
 	instrText, _ := instructions.LoadInstructions(a.shannonDir, ".", 4000)
 
 	basePrompt := baseSystemPrompt
 	if a.agentBasePrompt != "" {
 		basePrompt = a.agentBasePrompt
 	}
-	mem := memory
-	if a.agentMemory != "" {
-		mem = a.agentMemory
+
+	// Re-read memory from disk each Run() so writes from the agent
+	// or write-before-compact are picked up in long-lived sessions.
+	var mem string
+	if a.memoryDir != "" {
+		mem, _ = instructions.LoadMemoryFrom(a.memoryDir, 200)
+	} else {
+		mem, _ = instructions.LoadMemory(a.shannonDir, 200)
 	}
 
 	systemPrompt := prompt.BuildSystemPrompt(prompt.PromptOptions{
@@ -335,6 +348,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		MCPContext:   a.mcpContext,
 		CWD:          cwd,
 		Skills:       a.agentSkills,
+		MemoryDir:    a.memoryDir,
 	})
 
 	// Append cloud delegation guidance if tool is registered
@@ -449,6 +463,16 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			}
 			if shouldCompact {
 				if compactionSummary == "" {
+					// Write-before-compact: persist durable learnings to MEMORY.md
+					// before messages are discarded by compaction.
+					if a.memoryDir != "" {
+						if pErr := ctxwin.PersistLearnings(ctx, a.client, messages, a.memoryDir); pErr != nil {
+							fmt.Fprintf(os.Stderr, "[context] persist learnings failed: %v\n", pErr)
+						} else {
+							fmt.Fprintf(os.Stderr, "[context] persisted learnings to MEMORY.md\n")
+						}
+					}
+
 					summary, sumErr := ctxwin.GenerateSummary(ctx, a.client, messages)
 					if sumErr != nil {
 						summaryFailures++

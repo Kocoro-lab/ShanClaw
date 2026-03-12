@@ -370,3 +370,121 @@ func TestLoadInstructions_DeduplicationPreservesEmptyLines(t *testing.T) {
 		t.Errorf("expected all content lines present, got:\n%s", result)
 	}
 }
+
+func TestLoadMemoryFrom_ExpandsDetailFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(
+		"# Memory\n- basic fact\n- [2026-03-12] See [detail.md](detail.md) for more\n- another fact\n",
+	), 0644)
+	os.WriteFile(filepath.Join(dir, "detail.md"), []byte(
+		"# Detail\n- expanded fact 1\n- expanded fact 2\n",
+	), 0644)
+
+	result, err := LoadMemoryFrom(dir, 200)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "expanded fact 1") {
+		t.Error("should inline detail file content")
+	}
+	if !strings.Contains(result, "expanded fact 2") {
+		t.Error("should inline all lines from detail file")
+	}
+	if !strings.Contains(result, "another fact") {
+		t.Error("should keep lines after the expanded link")
+	}
+	// The pointer line itself should be replaced by the detail content
+	if strings.Contains(result, "See [detail.md]") {
+		t.Error("pointer line should be replaced by expanded content")
+	}
+}
+
+func TestLoadMemoryFrom_RejectsTraversal(t *testing.T) {
+	dir := t.TempDir()
+
+	// These should NOT be expanded
+	os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(
+		"- [link](../etc/passwd.md)\n- [link](sub/dir.md)\n- [link](back\\.md)\n",
+	), 0644)
+
+	result, err := LoadMemoryFrom(dir, 200)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// All lines should remain as-is (not expanded)
+	if !strings.Contains(result, "../etc/passwd.md") {
+		t.Error("should keep traversal link as-is")
+	}
+	if !strings.Contains(result, "sub/dir.md") {
+		t.Error("should keep subdir link as-is")
+	}
+}
+
+func TestLoadMemoryFrom_MissingDetailFile(t *testing.T) {
+	dir := t.TempDir()
+
+	os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(
+		"- [link](nonexistent.md)\n- kept line\n",
+	), 0644)
+
+	result, err := LoadMemoryFrom(dir, 200)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Missing file: keep the pointer line as-is
+	if !strings.Contains(result, "nonexistent.md") {
+		t.Error("should keep pointer to missing file as-is")
+	}
+	if !strings.Contains(result, "kept line") {
+		t.Error("should keep other lines")
+	}
+}
+
+func TestLoadMemoryFrom_SkipsSelfReference(t *testing.T) {
+	dir := t.TempDir()
+
+	os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(
+		"- [self](MEMORY.md)\n",
+	), 0644)
+
+	result, err := LoadMemoryFrom(dir, 200)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "MEMORY.md") {
+		t.Error("should keep self-reference as-is without infinite loop")
+	}
+}
+
+func TestLoadMemoryFrom_RespectsMaxLines(t *testing.T) {
+	dir := t.TempDir()
+
+	os.WriteFile(filepath.Join(dir, "MEMORY.md"), []byte(
+		"- line 1\n- [link](big.md)\n- line after\n",
+	), 0644)
+	// Detail file has 10 lines
+	var bigLines []string
+	for i := 0; i < 10; i++ {
+		bigLines = append(bigLines, "- big line")
+	}
+	os.WriteFile(filepath.Join(dir, "big.md"), []byte(strings.Join(bigLines, "\n")), 0644)
+
+	// maxLines=5: should get line 1 + first 4 lines from big.md, then stop
+	result, err := LoadMemoryFrom(dir, 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	lines := strings.Split(result, "\n")
+	if len(lines) > 5 {
+		t.Errorf("should respect maxLines, got %d lines", len(lines))
+	}
+	if strings.Contains(result, "line after") {
+		t.Error("should not include lines past maxLines limit")
+	}
+}

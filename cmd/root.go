@@ -213,8 +213,11 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	*skillsPtr = loadedSkills
 
 	if agentOverride != nil {
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx, loadedSkills)
+		agentDir := filepath.Join(shannonDir, "agents", agentName)
+		loop.SwitchAgent(agentOverride.Prompt, agentDir, nil, scopedMCPCtx, loadedSkills)
 	} else {
+		// Default agent: memory lives in shannonDir/memory/
+		loop.SetMemoryDir(filepath.Join(shannonDir, "memory"))
 		if loadedSkills != nil {
 			loop.SetSkills(loadedSkills)
 		}

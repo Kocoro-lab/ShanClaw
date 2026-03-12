@@ -130,7 +130,19 @@ func LoadMemory(shannonDir string, maxLines int) (string, error) {
 	if shannonDir == "" {
 		return "", nil
 	}
-	path := filepath.Join(shannonDir, "memory", "MEMORY.md")
+	return LoadMemoryFrom(filepath.Join(shannonDir, "memory"), maxLines)
+}
+
+// LoadMemoryFrom reads MEMORY.md from the given directory.
+// Returns the first maxLines lines of the file.
+// If the file doesn't exist, returns an empty string (not an error).
+// Markdown links to .md files in the same directory are auto-expanded inline
+// so the LLM sees the full content without needing extra file_read calls.
+func LoadMemoryFrom(dir string, maxLines int) (string, error) {
+	if dir == "" {
+		return "", nil
+	}
+	path := filepath.Join(dir, "MEMORY.md")
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -146,13 +158,62 @@ func LoadMemory(shannonDir string, maxLines int) (string, error) {
 		if len(lines) >= maxLines {
 			break
 		}
-		lines = append(lines, scanner.Text())
+		line := scanner.Text()
+
+		// Check for markdown links to local .md files and expand them inline.
+		// Pattern: [text](filename.md) where filename.md is in the same dir.
+		if ref := extractLocalMDLink(line); ref != "" {
+			refPath := filepath.Join(dir, ref)
+			if data, readErr := os.ReadFile(refPath); readErr == nil && utf8.Valid(data) {
+				// Replace the pointer line with the file's content
+				refLines := strings.Split(strings.TrimSpace(string(data)), "\n")
+				for _, rl := range refLines {
+					if len(lines) >= maxLines {
+						break
+					}
+					lines = append(lines, rl)
+				}
+				continue
+			}
+		}
+
+		lines = append(lines, line)
 	}
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
 
 	return strings.Join(lines, "\n"), nil
+}
+
+// extractLocalMDLink extracts a local .md filename from a markdown link in a line.
+// Returns the filename if found, or empty string.
+// Matches patterns like: [anything](filename.md) where filename doesn't contain / or ..
+func extractLocalMDLink(line string) string {
+	// Look for ](filename.md) pattern
+	idx := strings.Index(line, "](")
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+2:]
+	end := strings.Index(rest, ")")
+	if end < 0 {
+		return ""
+	}
+	ref := rest[:end]
+
+	// Must be a .md file, local (no slashes, no ..)
+	if !strings.HasSuffix(ref, ".md") {
+		return ""
+	}
+	if strings.Contains(ref, "/") || strings.Contains(ref, "\\") || strings.Contains(ref, "..") {
+		return ""
+	}
+	// Don't expand MEMORY.md itself (avoid infinite loop)
+	if ref == "MEMORY.md" {
+		return ""
+	}
+	return ref
 }
 
 // LoadCustomCommands scans for .md files in command directories.

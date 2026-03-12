@@ -311,9 +311,13 @@ func New(cfg *config.Config, version string, agentOverride *agents.Agent) *Model
 	*skillsPtr = loadedSkills
 
 	if agentOverride != nil {
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, "", loadedSkills)
-	} else if loadedSkills != nil {
-		loop.SetSkills(loadedSkills)
+		agentDir := filepath.Join(shannonDir, "agents", agentOverride.Name)
+		loop.SwitchAgent(agentOverride.Prompt, agentDir, nil, "", loadedSkills)
+	} else {
+		loop.SetMemoryDir(filepath.Join(shannonDir, "memory"))
+		if loadedSkills != nil {
+			loop.SetSkills(loadedSkills)
+		}
 	}
 	loop.SetEnableStreaming(true) // streaming enabled but deltas are suppressed — only final text rendered
 
@@ -724,11 +728,13 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.agentLoop.SetBypassPermissions(m.bypassPermissions)
 			m.agentLoop.SetEnableStreaming(true)
-			// Re-apply agent override (prompt, memory, MCP context, skills)
+			// Re-apply agent override (prompt, memory dir, MCP context, skills)
 			if m.agentOverride != nil {
 				scopedMCPCtx := tools.ResolveMCPContext(m.cfg, m.agentOverride)
-				m.agentLoop.SwitchAgent(m.agentOverride.Prompt, m.agentOverride.Memory, nil, scopedMCPCtx, m.loadedSkills)
+				agentDir := filepath.Join(m.shannonDir, "agents", m.agentOverride.Name)
+				m.agentLoop.SwitchAgent(m.agentOverride.Prompt, agentDir, nil, scopedMCPCtx, m.loadedSkills)
 			} else {
+				m.agentLoop.SetMemoryDir(filepath.Join(m.shannonDir, "memory"))
 				if m.loadedSkills != nil {
 					m.agentLoop.SetSkills(m.loadedSkills)
 				}

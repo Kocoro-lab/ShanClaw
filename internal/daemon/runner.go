@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -178,8 +179,10 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	loop.SetEnableStreaming(false)
 	if agentOverride != nil {
 		scopedMCPCtx := tools.ResolveMCPContext(cfg, agentOverride)
-		loop.SwitchAgent(agentOverride.Prompt, agentOverride.Memory, nil, scopedMCPCtx, loadedSkills)
+		agentDir := filepath.Join(deps.ShannonDir, "agents", agentName)
+		loop.SwitchAgent(agentOverride.Prompt, agentDir, nil, scopedMCPCtx, loadedSkills)
 	} else {
+		loop.SetMemoryDir(filepath.Join(deps.ShannonDir, "memory"))
 		if loadedSkills != nil {
 			loop.SetSkills(loadedSkills)
 		}

@@ -27,6 +27,7 @@ type PromptOptions struct {
 	Skills       []*skills.Skill
 	CWD          string // current working directory
 	SessionInfo  string // optional session context
+	MemoryDir    string // directory containing MEMORY.md for agent memory writes
 }
 
 // BuildSystemPrompt assembles the complete system prompt from layers.
@@ -88,7 +89,20 @@ func BuildSystemPrompt(opts PromptOptions) string {
 		sb.WriteString(mcp)
 	}
 
-	// 8. Context
+	// 8. Memory Persistence guidance
+	if opts.MemoryDir != "" {
+		memPath := opts.MemoryDir + "/MEMORY.md"
+		sb.WriteString("\n\n## Memory Persistence\n")
+		sb.WriteString(fmt.Sprintf("When you discover something worth remembering across future conversations, write it to `%s` using file_write or file_edit. Good candidates:\n", memPath))
+		sb.WriteString("- Decisions the user made (technical, design, or preferences)\n")
+		sb.WriteString("- User corrections about how they want to work\n")
+		sb.WriteString("- Important facts about projects, people, or systems\n")
+		sb.WriteString("- Patterns, gotchas, or insights you discovered together\n")
+		sb.WriteString("- Configuration or reference information that was hard to find\n\n")
+		sb.WriteString("Keep entries as short one-line bullets. Do NOT save ephemeral task status, code snippets, or things already documented in project files. Your context is automatically compacted in long sessions — anything not written to memory may be lost.")
+	}
+
+	// 9. Context
 	contextParts := buildContext(opts.CWD, opts.SessionInfo)
 	if contextParts != "" {
 		sb.WriteString("\n\n## Context\n")

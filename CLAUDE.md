@@ -47,6 +47,7 @@ internal/
   context/
     window.go          # EstimateTokens, ShouldCompact, ShapeHistory
     summarize.go       # GenerateSummary with Completer interface
+    persist.go         # PersistLearnings: write-before-compact memory extraction
   daemon/
     client.go          # WebSocket client with reconnect, bounded concurrency
     router.go          # SessionKey, SessionCache

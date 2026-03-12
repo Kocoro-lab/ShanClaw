@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/Kocoro-lab/shan/internal/skills"
 	"gopkg.in/yaml.v3"
@@ -128,22 +129,36 @@ func DeleteAgentCommand(agentsDir, agentName, cmdName string) error {
 	return os.Remove(filepath.Join(agentsDir, agentName, "commands", cmdName+".md"))
 }
 
-// WriteAgentSkill writes a single skill YAML file.
+// WriteAgentSkill writes a skill as a SKILL.md file with YAML frontmatter.
 func WriteAgentSkill(agentsDir, agentName string, skill *skills.Skill) error {
-	dir := filepath.Join(agentsDir, agentName, "skills")
+	dir := filepath.Join(agentsDir, agentName, "skills", skill.Name)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	data, err := yaml.Marshal(skill)
-	if err != nil {
-		return fmt.Errorf("marshal skill: %w", err)
+	var buf strings.Builder
+	buf.WriteString("---\n")
+	buf.WriteString("name: " + skill.Name + "\n")
+	buf.WriteString("description: " + skill.Description + "\n")
+	if skill.License != "" {
+		buf.WriteString("license: " + skill.License + "\n")
 	}
-	return AtomicWrite(filepath.Join(dir, skill.Name+".yaml"), data)
+	if skill.Compatibility != "" {
+		buf.WriteString("compatibility: " + skill.Compatibility + "\n")
+	}
+	if len(skill.AllowedTools) > 0 {
+		buf.WriteString("allowed-tools: " + strings.Join(skill.AllowedTools, " ") + "\n")
+	}
+	buf.WriteString("---\n\n")
+	buf.WriteString(skill.Prompt)
+	if !strings.HasSuffix(skill.Prompt, "\n") {
+		buf.WriteString("\n")
+	}
+	return AtomicWrite(filepath.Join(dir, "SKILL.md"), []byte(buf.String()))
 }
 
-// DeleteAgentSkill removes a single skill file.
+// DeleteAgentSkill removes a single skill directory.
 func DeleteAgentSkill(agentsDir, agentName, skillName string) error {
-	return os.Remove(filepath.Join(agentsDir, agentName, "skills", skillName+".yaml"))
+	return os.RemoveAll(filepath.Join(agentsDir, agentName, "skills", skillName))
 }
 
 // DeleteAgentDir removes the entire agent directory.

@@ -110,7 +110,10 @@ func LoadAgent(agentsDir, name string) (*Agent, error) {
 	ag.Commands = loadAgentCommands(filepath.Join(dir, "commands"))
 
 	// Load agent-scoped skills (optional)
-	loadedSkills, err := skills.LoadSkills(dir, name)
+	loadedSkills, err := skills.LoadSkills(skills.SkillSource{
+		Dir:    filepath.Join(dir, "skills"),
+		Source: "agent:" + name,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("agent %q: bad skills: %w", name, err)
 	}

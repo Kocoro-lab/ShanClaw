@@ -293,6 +293,36 @@ func TestSessionMessageMetaBackwardCompat(t *testing.T) {
 	}
 }
 
+func TestSessionSourceAtSafety(t *testing.T) {
+	sess := &Session{
+		Messages: []client.Message{
+			{Role: "user", Content: client.NewTextContent("hello")},
+		},
+		// No MessageMeta — simulates legacy session
+	}
+
+	// Negative index should not panic
+	if sess.SourceAt(-1) != "unknown" {
+		t.Fatal("expected 'unknown' for negative index")
+	}
+
+	// Out of bounds should not panic
+	if sess.SourceAt(999) != "unknown" {
+		t.Fatal("expected 'unknown' for out-of-bounds index")
+	}
+
+	// Valid index but no meta
+	if sess.SourceAt(0) != "unknown" {
+		t.Fatal("expected 'unknown' for missing meta")
+	}
+
+	// With meta
+	sess.MessageMeta = []MessageMeta{{Source: "slack"}}
+	if sess.SourceAt(0) != "slack" {
+		t.Fatalf("expected 'slack', got %q", sess.SourceAt(0))
+	}
+}
+
 func TestStore_LoadLegacyStringContent(t *testing.T) {
 	dir := t.TempDir()
 	legacyJSON := `{

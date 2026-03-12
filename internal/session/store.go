@@ -31,7 +31,7 @@ type Session struct {
 
 // SourceAt returns the source for message at index i, or "unknown" if not available.
 func (s *Session) SourceAt(i int) string {
-	if i < len(s.MessageMeta) && s.MessageMeta[i].Source != "" {
+	if i >= 0 && i < len(s.MessageMeta) && s.MessageMeta[i].Source != "" {
 		return s.MessageMeta[i].Source
 	}
 	return "unknown"

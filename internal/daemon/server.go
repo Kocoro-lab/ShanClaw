@@ -23,26 +23,34 @@ import (
 )
 
 type Server struct {
-	port           int
-	client         *Client
-	deps           *ServerDeps
-	server         *http.Server
-	listener       net.Listener
-	version        string
-	cancel         context.CancelFunc
-	approvalBroker *ApprovalBroker
-	eventBus       *EventBus
+	port                   int
+	client                 *Client
+	deps                   *ServerDeps
+	server                 *http.Server
+	listener               net.Listener
+	version                string
+	cancel                 context.CancelFunc
+	approvalBroker         *ApprovalBroker
+	eventBus               *EventBus
+	notifyApprovalResolved func(p ApprovalResolvedPayload) error
 }
 
 func NewServer(port int, client *Client, deps *ServerDeps, version string) *Server {
 	return &Server{
-		port:           port,
-		client:         client,
-		deps:           deps,
-		version:        version,
-		approvalBroker: NewApprovalBroker(func(req ApprovalRequest) error { return nil }),
-		eventBus:       NewEventBus(),
+		port:                   port,
+		client:                 client,
+		deps:                   deps,
+		version:                version,
+		approvalBroker:         NewApprovalBroker(func(req ApprovalRequest) error { return nil }),
+		eventBus:               NewEventBus(),
+		notifyApprovalResolved: func(p ApprovalResolvedPayload) error { return nil },
 	}
+}
+
+// SetApprovalResolvedNotifier sets the function called to notify Cloud when
+// Ptfrog resolves an approval before the external channel does.
+func (s *Server) SetApprovalResolvedNotifier(fn func(ApprovalResolvedPayload) error) {
+	s.notifyApprovalResolved = fn
 }
 
 func (s *Server) Port() int {
@@ -129,7 +137,25 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"decision must be allow, deny, or always_allow"}`, http.StatusBadRequest)
 		return
 	}
+	// Notify Cloud and emit event BEFORE unblocking the agent.
+	// This ensures Ptfrog dismisses the approval card before seeing the agent reply.
+	_ = s.notifyApprovalResolved(ApprovalResolvedPayload{
+		RequestID:  req.RequestID,
+		Decision:   req.Decision,
+		ResolvedBy: "ptfrog",
+	})
+
+	if s.eventBus != nil {
+		payload, _ := json.Marshal(map[string]string{
+			"request_id":  req.RequestID,
+			"decision":    string(req.Decision),
+			"resolved_by": "ptfrog",
+		})
+		s.eventBus.Emit(Event{Type: EventApprovalResolved, Payload: payload})
+	}
+
 	s.approvalBroker.Resolve(req.RequestID, req.Decision)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"ok":true}`))
 }
@@ -376,23 +402,21 @@ func (s *Server) handleMessageSSE(w http.ResponseWriter, r *http.Request, req Ru
 	w.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
-	// Set the broker's sendFn to emit SSE approval events for this request.
-	// NOTE: This overwrites the sendFn for all SSE requests. The local daemon
-	// only processes one SSE request at a time, so this is acceptable. If
-	// concurrent SSE support is needed, each request needs its own broker.
-	s.approvalBroker.mu.Lock()
-	s.approvalBroker.sendFn = func(areq ApprovalRequest) error {
+	// Create a per-request broker to avoid racing with concurrent SSE requests.
+	// Each SSE stream gets its own broker with its own sendFn and pending map.
+	reqBroker := NewApprovalBroker(func(areq ApprovalRequest) error {
 		data := mustJSON(areq)
 		_, err := fmt.Fprintf(w, "event: approval\ndata: %s\n\n", data)
 		flusher.Flush()
 		return err
-	}
-	s.approvalBroker.mu.Unlock()
+	})
+	// Inherit onRequest callback from the server broker for EventBus emission.
+	reqBroker.onRequest = s.approvalBroker.onRequest
 
-	// Cancel all pending approvals when the SSE stream ends (client disconnect, normal completion, or error)
-	defer s.approvalBroker.CancelAll()
+	// Cancel only this request's pending approvals when the SSE stream ends.
+	defer reqBroker.CancelAll()
 
-	handler := &sseEventHandler{w: w, flusher: flusher, broker: s.approvalBroker, ctx: r.Context()}
+	handler := &sseEventHandler{w: w, flusher: flusher, broker: reqBroker, ctx: r.Context()}
 	result, err := RunAgent(r.Context(), s.deps, req, handler)
 	if err != nil {
 		fmt.Fprintf(w, "event: error\ndata: %s\n\n", mustJSON(map[string]string{"error": err.Error()}))

@@ -30,6 +30,12 @@ type Client struct {
 	activeAgent   atomic.Value // stores string
 	startTime     time.Time
 	broker        *ApprovalBroker
+	eventBus      *EventBus
+}
+
+// SetEventBus sets the event bus for emitting daemon events.
+func (c *Client) SetEventBus(bus *EventBus) {
+	c.eventBus = bus
 }
 
 func NewClient(endpoint, apiKey string, onMsg func(MessagePayload) string, onSystem func(string)) *Client {
@@ -136,6 +142,18 @@ func (c *Client) SendApprovalRequest(req ApprovalRequest) error {
 	return c.sendEnvelope(DaemonMessage{Type: MsgTypeApprovalRequest, Payload: payload})
 }
 
+// SendApprovalResolved sends an approval_resolved message over WS to Cloud.
+func (c *Client) SendApprovalResolved(p ApprovalResolvedPayload) error {
+	payload, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	return c.sendEnvelope(DaemonMessage{
+		Type:    MsgTypeApprovalResolved,
+		Payload: payload,
+	})
+}
+
 // Listen reads messages from the WebSocket and dispatches them.
 // It blocks until the context is cancelled or the connection drops.
 func (c *Client) Listen(ctx context.Context) error {
@@ -189,10 +207,25 @@ func (c *Client) Listen(ctx context.Context) error {
 			}
 		case MsgTypeApprovalResponse:
 			var resp ApprovalResponse
-			if err := json.Unmarshal(sm.Payload, &resp); err == nil {
-				if c.broker != nil {
-					c.broker.Resolve(resp.RequestID, resp.Decision)
-				}
+			if err := json.Unmarshal(sm.Payload, &resp); err != nil {
+				log.Printf("daemon: invalid approval_response: %v", err)
+				continue
+			}
+			// Emit before Resolve so Ptfrog dismisses the card before seeing the reply.
+			resolvedBy := resp.ResolvedBy
+			if resolvedBy == "" {
+				resolvedBy = "external"
+			}
+			if c.eventBus != nil {
+				payload, _ := json.Marshal(map[string]string{
+					"request_id":  resp.RequestID,
+					"decision":    string(resp.Decision),
+					"resolved_by": resolvedBy,
+				})
+				c.eventBus.Emit(Event{Type: EventApprovalResolved, Payload: payload})
+			}
+			if c.broker != nil {
+				c.broker.Resolve(resp.RequestID, resp.Decision)
 			}
 		case MsgTypeSystem:
 			if c.onSystem != nil {

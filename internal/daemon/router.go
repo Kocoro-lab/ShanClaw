@@ -126,33 +126,23 @@ func (sc *SessionCache) UnlockRoute(key string) {
 	}
 
 	// Check evicting flag under the already-held lock.
-	var (
-		deleteRoute bool
-		mgr         *session.Manager
-	)
+	var mgr *session.Manager
 	entry.cancel = nil
 	entry.lastAccess = time.Now()
 	if entry.evicting {
-		deleteRoute = true
 		mgr = entry.manager
 		entry.manager = nil
 		entry.evicting = false
 	}
 
 	// Single unlock point — releases the lock from LockRouteWithManager.
+	// Entry stays in the map as a reusable shell (never deleted).
 	entry.mu.Unlock()
 
-	if deleteRoute {
-		if mgr != nil {
-			if err := mgr.Close(); err != nil {
-				log.Printf("daemon: failed to close session for evicted route %q: %v", key, err)
-			}
+	if mgr != nil {
+		if err := mgr.Close(); err != nil {
+			log.Printf("daemon: failed to close session for evicted route %q: %v", key, err)
 		}
-		sc.mu.Lock()
-		if cur := sc.routes[key]; cur == entry {
-			delete(sc.routes, key)
-		}
-		sc.mu.Unlock()
 	}
 }
 
@@ -269,6 +259,9 @@ func (sc *SessionCache) Evict(agent string) {
 }
 
 // evictRoute handles a single route eviction without holding sc.mu.
+// The entry is never deleted from the map — it stays as a reusable shell.
+// This prevents the race where LockRouteWithManager holds an orphaned entry
+// and UnlockRoute can't find it to release the mutex.
 func (sc *SessionCache) evictRoute(key string) {
 	sc.mu.Lock()
 	entry := sc.routes[key]
@@ -289,6 +282,8 @@ func (sc *SessionCache) evictRoute(key string) {
 		entry.mu.Unlock()
 		return // UnlockRoute will finalize when the run completes
 	}
+	// Nil out manager but keep entry in map — LockRouteWithManager will
+	// create a fresh manager on next use (it checks entry.manager == nil).
 	entry.manager = nil
 	entry.mu.Unlock()
 
@@ -297,12 +292,6 @@ func (sc *SessionCache) evictRoute(key string) {
 			log.Printf("daemon: failed to close session for route %q: %v", key, err)
 		}
 	}
-
-	sc.mu.Lock()
-	if cur := sc.routes[key]; cur == entry {
-		delete(sc.routes, key)
-	}
-	sc.mu.Unlock()
 }
 
 // CloseAll closes all session managers and clears cache state.

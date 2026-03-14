@@ -18,6 +18,7 @@ type routeEntry struct {
 	sessionID  string
 	lastAccess time.Time
 	injectCh   chan string // buffered channel for mid-run message injection
+	evicting   bool
 	manager    *session.Manager
 }
 
@@ -114,6 +115,8 @@ func (sc *SessionCache) LockRouteWithManager(key, sessionsDir string) *routeEntr
 }
 
 // UnlockRoute releases the per-route mutex acquired by LockRoute.
+// IMPORTANT: entry.mu is already held by the caller (from LockRouteWithManager).
+// Do NOT re-acquire it — sync.Mutex is not reentrant.
 func (sc *SessionCache) UnlockRoute(key string) {
 	sc.mu.Lock()
 	entry, ok := sc.routes[key]
@@ -121,9 +124,36 @@ func (sc *SessionCache) UnlockRoute(key string) {
 	if !ok || entry == nil {
 		return
 	}
+
+	// Check evicting flag under the already-held lock.
+	var (
+		deleteRoute bool
+		mgr         *session.Manager
+	)
 	entry.cancel = nil
 	entry.lastAccess = time.Now()
+	if entry.evicting {
+		deleteRoute = true
+		mgr = entry.manager
+		entry.manager = nil
+		entry.evicting = false
+	}
+
+	// Single unlock point — releases the lock from LockRouteWithManager.
 	entry.mu.Unlock()
+
+	if deleteRoute {
+		if mgr != nil {
+			if err := mgr.Close(); err != nil {
+				log.Printf("daemon: failed to close session for evicted route %q: %v", key, err)
+			}
+		}
+		sc.mu.Lock()
+		if cur := sc.routes[key]; cur == entry {
+			delete(sc.routes, key)
+		}
+		sc.mu.Unlock()
+	}
 }
 
 // SetRouteSessionID stores the current route session id for future resume.
@@ -209,10 +239,12 @@ func (sc *SessionCache) CancelRoute(key string) {
 }
 
 // Evict closes and removes the manager for this agent and drops matching route
-// state.
+// state. For active routes (in-flight run), it marks them as evicting and
+// cancels — UnlockRoute finalizes cleanup when the run completes.
+// IMPORTANT: sc.mu is released before per-route locking to avoid ABBA deadlock
+// (other paths hold entry.mu then briefly acquire sc.mu).
 func (sc *SessionCache) Evict(agent string) {
 	sc.mu.Lock()
-	defer sc.mu.Unlock()
 	sessionsDir := sc.sessionsDir(agent)
 	if mgr, ok := sc.managers[sessionsDir]; ok && mgr != nil {
 		if err := mgr.Close(); err != nil {
@@ -221,17 +253,56 @@ func (sc *SessionCache) Evict(agent string) {
 		delete(sc.managers, sessionsDir)
 	}
 
+	// Collect route keys to evict, then release sc.mu before per-route work.
 	prefix := sc.agentRouteKey(agent)
+	var keys []string
 	for key := range sc.routes {
 		if key == prefix || strings.HasPrefix(key, prefix+":") {
-			if route := sc.routes[key]; route != nil && route.manager != nil {
-				if err := route.manager.Close(); err != nil {
-					log.Printf("daemon: failed to close session for route %q: %v", key, err)
-				}
-			}
-			delete(sc.routes, key)
+			keys = append(keys, key)
 		}
 	}
+	sc.mu.Unlock()
+
+	for _, key := range keys {
+		sc.evictRoute(key)
+	}
+}
+
+// evictRoute handles a single route eviction without holding sc.mu.
+func (sc *SessionCache) evictRoute(key string) {
+	sc.mu.Lock()
+	entry := sc.routes[key]
+	sc.mu.Unlock()
+	if entry == nil {
+		return
+	}
+
+	entry.mu.Lock()
+	mgr := entry.manager
+	active := entry.cancel != nil || entry.done != nil
+	if active {
+		// Route has an in-flight run — mark for deferred cleanup.
+		entry.evicting = true
+		if entry.cancel != nil {
+			entry.cancel()
+		}
+		entry.mu.Unlock()
+		return // UnlockRoute will finalize when the run completes
+	}
+	entry.manager = nil
+	entry.mu.Unlock()
+
+	if mgr != nil {
+		if err := mgr.Close(); err != nil {
+			log.Printf("daemon: failed to close session for route %q: %v", key, err)
+		}
+	}
+
+	sc.mu.Lock()
+	if cur := sc.routes[key]; cur == entry {
+		delete(sc.routes, key)
+	}
+	sc.mu.Unlock()
 }
 
 // CloseAll closes all session managers and clears cache state.

@@ -231,12 +231,12 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 		route.cancel = cancel
 		route.injectCh = make(chan string, 10) // buffered for async sends
 		ctx = reqCtx
-		defer func() {
+	defer func() {
 			// route.mu is already held from LockRouteWithManager — do NOT
 			// re-acquire it (sync.Mutex is not reentrant; that deadlocks).
 			// Clean up under the existing lock, then release via UnlockRoute.
 			if route.done != nil {
-				close(route.done)
+				closeRouteDone(route.done)
 			}
 			route.done = nil
 			route.cancel = nil
@@ -474,4 +474,17 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+func closeRouteDone(done chan struct{}) {
+	if done == nil {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			// Best effort cleanup; callers may close defensively in multiple paths.
+			// Avoid panic if the channel was already closed externally.
+		}
+	}()
+	close(done)
 }

@@ -102,10 +102,9 @@ func TestSessionCache_Evict(t *testing.T) {
 		t.Fatal("expected non-nil manager")
 	}
 
-	// Evict it
-	sc.Lock("test-agent")
+	// Evict without holding the route lock (normal CRUD API path).
+	// Evict must NOT be called from the same goroutine holding the route lock.
 	sc.Evict("test-agent")
-	sc.Unlock("test-agent")
 
 	// GetOrCreate should return a fresh manager
 	mgr2 := sc.GetOrCreate("test-agent")

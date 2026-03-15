@@ -660,6 +660,19 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				continue
 			}
 
+			if len(deniedCalls) > 0 && hallucinationNudges < 2 && claimsSuccessAfterDenial(resp.OutputText) {
+				hallucinationNudges++
+				messages = append(messages, client.Message{
+					Role:    "assistant",
+					Content: client.NewTextContent(resp.OutputText),
+				})
+				messages = append(messages, client.Message{
+					Role:    "user",
+					Content: client.NewTextContent("STOP. A tool was denied by the user this turn, but your response claims it completed. The denied tool did NOT run. Acknowledge the denial and ask how to proceed instead."),
+				})
+				continue
+			}
+
 			// Only render text for the final response — intermediate text
 			// from checkpoint/hallucination paths must not leak to the user.
 			// If earlier iterations were truncated, prepend the accumulated text.
@@ -833,7 +846,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				a.logAudit(fc.Name, argsStr, "tool call denied by user", decision, false, 0)
 				callMeta[idx].resolved = true
 				execResults[idx] = toolExecResult{
-					result: ToolResult{Content: "tool call denied by user", IsError: true},
+					result: ToolResult{Content: "Tool execution was DENIED by the user. The command did NOT run. Do not claim it completed or report any output from it.", IsError: true},
 				}
 				deniedCalls[dedupKey] = true
 				if a.handler != nil {
@@ -1527,7 +1540,18 @@ func compressToolResultText(text string, maxChars int) string {
 }
 
 // unverifiedClaimPatterns matches text that claims to see, read, or complete something.
-var unverifiedClaimPatterns = regexp.MustCompile(`(?i)(?:I (?:can see|see that|notice|observe|found that)|I(?:'ve| have) (?:successfully|completed|finished|done|created|updated|deleted|modified|set|changed)|(?:the (?:screen|window|page|app|file|output|result) (?:shows|displays|contains|has|reads)))`)
+var unverifiedClaimPatterns = regexp.MustCompile(`(?i)(?:I (?:can see|see that|notice|observe|found that)|I(?:'ve| have) (?:successfully|completed|finished|done|created|updated|deleted|modified|set|changed)|(?:the (?:screen|window|page|app|file|output|result) (?:shows|displays|contains|has|reads))|(?:the (?:command|task|operation|script|request))\b.{0,60}?(?:completed|finished|succeeded|ran|executed|worked)\b)`)
+
+// deniedSuccessPattern catches responses claiming a task completed even when no minimum
+// length is met — any confident success claim after a denial is a red flag.
+var deniedSuccessPattern = regexp.MustCompile(`(?i)(?:^Done\b|completed successfully|ran successfully|executed successfully|finished successfully|(?:the (?:command|task|operation|script|request))\b.{0,60}?(?:completed|finished|succeeded|ran|executed|worked)\b)`)
+
+// claimsSuccessAfterDenial returns true if the response claims a task completed.
+// Unlike looksLikeUnverifiedClaim, this has no minimum-length exemption — it is only
+// called when at least one tool was denied this turn, making any success claim suspect.
+func claimsSuccessAfterDenial(text string) bool {
+	return deniedSuccessPattern.MatchString(text)
+}
 
 // looksLikeUnverifiedClaim returns true if the text contains phrases that claim
 // observation or completion — the kind of claims that should be backed by a tool call.

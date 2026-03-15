@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -33,12 +35,14 @@ type RemoteTool struct {
 type ClientManager struct {
 	mu      sync.Mutex
 	clients map[string]mcpclient.MCPClient // server name → client
+	configs map[string]MCPServerConfig     // server name → config (for reconnect)
 }
 
 // NewClientManager creates a new MCP client manager.
 func NewClientManager() *ClientManager {
 	return &ClientManager{
 		clients: make(map[string]mcpclient.MCPClient),
+		configs: make(map[string]MCPServerConfig),
 	}
 }
 
@@ -147,6 +151,7 @@ func (m *ClientManager) connect(ctx context.Context, name string, cfg MCPServerC
 
 	m.mu.Lock()
 	m.clients[name] = c
+	m.configs[name] = cfg
 	m.mu.Unlock()
 
 	var tools []RemoteTool
@@ -161,6 +166,7 @@ func (m *ClientManager) connect(ctx context.Context, name string, cfg MCPServerC
 }
 
 // CallTool invokes a tool on the specified MCP server.
+// If the call fails with a connection error, it attempts to reconnect once and retry.
 func (m *ClientManager) CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (string, bool, error) {
 	m.mu.Lock()
 	c, ok := m.clients[serverName]
@@ -176,7 +182,40 @@ func (m *ClientManager) CallTool(ctx context.Context, serverName, toolName strin
 			Arguments: args,
 		},
 	})
-	if err != nil {
+	if err != nil && isTransportError(err) {
+		// Transport failure (process died, broken pipe, EOF).
+		// Attempt a one-shot reconnect using a fresh background context so a
+		// cancelled request context doesn't prevent recovery.
+		origErr := err
+		m.mu.Lock()
+		cfg, hasCfg := m.configs[serverName]
+		stale := m.clients[serverName]
+		m.mu.Unlock()
+
+		if hasCfg {
+			// Close the stale client to release its resources before reconnecting.
+			if stale != nil {
+				_ = stale.Close()
+			}
+			reconnectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if _, reconnErr := m.connect(reconnectCtx, serverName, cfg); reconnErr == nil {
+				m.mu.Lock()
+				c = m.clients[serverName]
+				m.mu.Unlock()
+				result, err = c.CallTool(ctx, mcp.CallToolRequest{
+					Params: mcp.CallToolParams{
+						Name:      toolName,
+						Arguments: args,
+					},
+				})
+			}
+		}
+		if err != nil {
+			// Preserve the original transport error for diagnostics.
+			return "", true, fmt.Errorf("tools/call failed: %w (reconnect attempted after: %v)", origErr, err)
+		}
+	} else if err != nil {
 		return "", true, fmt.Errorf("tools/call failed: %w", err)
 	}
 
@@ -222,6 +261,22 @@ func (m *ClientManager) Close() {
 		}(c)
 	}
 	wg.Wait()
+}
+
+// isTransportError reports whether err indicates a transport/connection failure
+// (process exited, broken pipe, EOF) rather than a tool-logic or protocol error.
+// Only transport errors should trigger a reconnect attempt — retrying on logic
+// errors risks duplicating non-idempotent side effects.
+func isTransportError(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "use of closed network connection") ||
+		strings.Contains(s, "read/write on closed pipe") ||
+		strings.Contains(s, "signal: killed") ||
+		strings.Contains(s, "process already finished")
 }
 
 func buildEnvSlice(env map[string]string) []string {

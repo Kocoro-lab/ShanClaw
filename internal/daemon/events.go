@@ -12,6 +12,7 @@ const (
 	EventApprovalRequest  = "approval_request"
 	EventApprovalResolved = "approval_resolved"
 	EventAgentError       = "agent_error"
+	EventHeartbeatAlert   = "heartbeat_alert"
 )
 
 // Event is a daemon lifecycle event pushed to SSE subscribers.

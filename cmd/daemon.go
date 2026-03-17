@@ -330,7 +330,8 @@ var daemonStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the background daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if daemon.IsDaemonServiceLoaded() {
+		launchdManaged := daemon.IsDaemonServiceLoaded()
+		if launchdManaged {
 			if err := daemon.LaunchctlBootout(); err != nil {
 				log.Printf("Warning: launchctl bootout failed: %v", err)
 			}
@@ -338,6 +339,17 @@ var daemonStopCmd = &cobra.Command{
 		}
 
 		pidPath := filepath.Join(config.ShannonDir(), "daemon.pid")
+
+		// If launchd bootout already killed the process, we're done.
+		if launchdManaged {
+			// Brief wait for process to exit after bootout.
+			time.Sleep(500 * time.Millisecond)
+			if _, locked := daemon.IsLocked(pidPath); !locked {
+				fmt.Println("Daemon stopped (launchd service removed).")
+				return nil
+			}
+			// Process still alive — fall through to HTTP/SIGTERM.
+		}
 
 		// Try graceful HTTP shutdown first.
 		resp, err := http.Post("http://127.0.0.1:7533/shutdown", "application/json", nil)

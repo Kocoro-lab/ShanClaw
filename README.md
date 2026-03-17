@@ -766,7 +766,7 @@ Create independent agents with their own instructions, memory, tools, MCP server
     MEMORY.md         # agent-specific memory (persists across sessions)
     config.yaml       # optional: tool filtering, MCP scoping, model overrides
     commands/          # optional: agent-scoped slash commands (*.md)
-    skills/            # optional: agent-scoped skills (*.yaml)
+    skills/            # optional: agent-scoped skills (skill-name/SKILL.md)
 ```
 
 ### Creating an Agent
@@ -817,6 +817,20 @@ agent:
   temperature: 0.2
   max_tokens: 16000
   context_window: 64000
+
+# File system watcher — trigger agent on file changes
+watch:
+  - path: ~/Code/myproject
+    glob: "*.go"
+  - path: ~/Downloads
+    glob: "*.csv"
+
+# Heartbeat — periodic "anything need attention?" checks
+heartbeat:
+  every: 30m                    # Go duration (required)
+  active_hours: "09:00-22:00"   # optional time window (supports overnight e.g. "22:00-02:00")
+  model: small                  # optional cheaper model for heartbeat runs
+  isolated_session: true        # default true — fresh session per heartbeat
 ```
 
 **Tool filtering options:**
@@ -857,22 +871,27 @@ Use in the TUI: `/review src/auth/login.go`
 
 ### Agent Skills
 
-Create `.yaml` files in the `skills/` directory for reusable prompt templates:
+Skills use the [Anthropic SKILL.md spec](https://agentskills.io/specification). Create a directory per skill with a `SKILL.md` file:
 
 ```bash
-mkdir -p ~/.shannon/agents/reviewer/skills
+mkdir -p ~/.shannon/agents/reviewer/skills/summarize
 
-cat > ~/.shannon/agents/reviewer/skills/summarize.yaml << 'EOF'
+cat > ~/.shannon/agents/reviewer/skills/summarize/SKILL.md << 'EOF'
+---
 name: summarize
 description: Summarize codebase architecture
-type: prompt
-prompt: |
-  Provide a concise summary of the architecture and key decisions.
-  Focus on: entry points, data flow, error handling patterns.
+---
+
+Provide a concise summary of the architecture and key decisions.
+Focus on: entry points, data flow, error handling patterns.
 EOF
 ```
 
-Skills appear as `/summarize` in the TUI. Only `type: prompt` is supported.
+Skills are listed in the system prompt (name + description only). The LLM activates a skill by calling the `use_skill` tool, which returns the full SKILL.md body — progressive disclosure that keeps prompt size small.
+
+**Skill sources (priority order):** agent-scoped (`skills/`) > global (`~/.shannon/skills/`) > bundled.
+
+Skills also appear as `/summarize` slash commands in the TUI.
 
 ### Using Agents
 
@@ -903,8 +922,9 @@ The daemon serves two roles: it connects to Shannon Cloud via WebSocket to recei
 
 ```bash
 shan daemon start           # foreground (logs to stdout)
-shan daemon stop            # stop background daemon
-shan daemon status          # show connection status
+shan daemon start -d        # background via launchd (macOS, survives reboots)
+shan daemon stop            # stop daemon + remove launchd service if installed
+shan daemon status          # show connection status + launchd state
 ```
 
 ### Architecture
@@ -927,6 +947,8 @@ Slack/LINE ──webhook──▶ Shannon Cloud ──WebSocket──▶ shan da
 - **Auto-reconnect** with exponential backoff on connection loss
 - **Graceful disconnect** — sends disconnect message on shutdown
 - **Schedule mutation tools** (`schedule_create/update/remove`) are denied by default in daemon mode
+- **Interactive approval** — tools requiring approval send requests to the client app (via WS relay through Shannon Cloud); supports "always allow" persistence for bash commands
+- **HITL message injection** — send follow-up messages to a running agent via `POST /message`; messages are injected mid-turn and incorporated into the conversation
 
 ### Local HTTP API (port 7533)
 
@@ -939,7 +961,9 @@ The daemon exposes a localhost-only HTTP server for native app integration and s
 | `/agents` | GET | List named agents from `~/.shannon/agents/` |
 | `/sessions` | GET | List sessions, optional `?agent=` filter |
 | `/sessions/search` | GET | Search session history, `?q=<query>&agent=<name>` |
-| `/message` | POST | Send a message to an agent, get reply |
+| `/message` | POST | Send a message to an agent, get reply (supports HITL injection) |
+| `/config/reload` | POST | Reload config, restart watchers and heartbeat managers |
+| `/events` | GET | SSE stream of daemon events (`agent_reply`, `heartbeat_alert`, etc.) |
 | `/shutdown` | POST | Graceful daemon shutdown (used by `shan daemon stop`) |
 
 **Send a message:**
@@ -1036,6 +1060,65 @@ Supports ranges (`1-5`), steps (`*/5`), lists (`1,3,5`), and combinations.
 - `SyncStatus` tracks whether launchd is in sync: `ok`, `pending`, or `failed`
 - `shan schedule sync` retries any failed plist operations
 
+## File System Watcher
+
+Agents can react to file changes in real-time. Configure watched paths in the agent's `config.yaml`:
+
+```yaml
+watch:
+  - path: ~/Code/myproject
+    glob: "*.go"              # optional — omit to watch all files
+  - path: ~/Downloads
+    glob: "*.csv"
+```
+
+When files matching the glob are created, modified, deleted, or renamed, the agent receives a prompt like:
+
+```
+File changes detected:
+- modified: internal/agent/loop.go
+- created: internal/agent/loop_test.go
+```
+
+- **Debounce**: Changes are batched over a 2-second window to avoid flooding from rapid saves
+- **Recursive**: Existing subdirectories are watched at startup; new subdirectories are auto-added
+- **Routing**: Events route to the agent's session (`agent:<name>` key), sharing context with other messages
+- **Fan-out**: If multiple agents watch overlapping directories, each gets its own event batch
+- **Reload**: `POST /config/reload` rebuilds all watchers from fresh agent configs
+
+## Heartbeat Mode
+
+Agents can run periodic health checks using a configurable heartbeat. Define the checklist in `HEARTBEAT.md`:
+
+```bash
+cat > ~/.shannon/agents/ops-bot/HEARTBEAT.md << 'EOF'
+- Check if any git repos in ~/Code have uncommitted changes
+- Check if disk usage > 90%
+- Check if any background processes are stuck
+EOF
+```
+
+Configure the interval in `config.yaml`:
+
+```yaml
+heartbeat:
+  every: 30m                    # required — Go duration
+  active_hours: "09:00-22:00"   # optional (supports overnight e.g. "22:00-02:00")
+  model: small                  # optional — cheaper model for cost control
+  isolated_session: true        # default true — fresh session per heartbeat
+```
+
+### Silent-Ack Protocol
+
+If everything is fine, the agent replies `HEARTBEAT_OK` — this is silently dropped (no notification, no session persistence). If something needs attention, the reply is emitted as a `heartbeat_alert` event on the EventBus and logged.
+
+### Cost Controls
+
+- **Isolated sessions** (default): No conversation history carried between heartbeats
+- **Model override**: Use a cheaper model tier for routine checks
+- **Empty checklist**: If `HEARTBEAT.md` is missing or empty, the heartbeat is skipped entirely (no tokens spent)
+- **Overlap prevention**: If a previous heartbeat is still running, the next tick is skipped
+
 ## SSE Event Handling
 
 Remote workflows (`/research`, `/swarm`) stream events via SSE:
@@ -1083,7 +1166,7 @@ go vet ./...                 # lint
 - **Vision**: Screenshots are captured, resized (1200px max), and sent as base64 image content blocks to the LLM. The computer tool uses Anthropic's native `computer_20251124` schema with coordinate scaling for retina displays. Vision models may blend what they see with training knowledge — verify critical details.
 - **Streaming**: One-shot mode does not stream responses; it waits for the full LLM response before displaying.
 - **Windows/Linux**: Local tools (clipboard, notifications, AppleScript, screenshot, computer) and scheduled tasks (launchd) are macOS-only.
-- **Daemon**: Background mode (`shan daemon start -d`) not yet implemented — runs in foreground only.
+- **Daemon background mode**: `shan daemon start -d` uses launchd (macOS only).
 - **Scheduled tasks**: launchd-only (macOS). Complex cron expressions (ranges, steps) fall back to `StartInterval` instead of `StartCalendarInterval`.
 
 ## License

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,10 +20,12 @@ import (
 	"github.com/Kocoro-lab/shan/internal/client"
 	"github.com/Kocoro-lab/shan/internal/config"
 	"github.com/Kocoro-lab/shan/internal/daemon"
+	"github.com/Kocoro-lab/shan/internal/heartbeat"
 	"github.com/Kocoro-lab/shan/internal/hooks"
 	"github.com/Kocoro-lab/shan/internal/permissions"
 	"github.com/Kocoro-lab/shan/internal/schedule"
 	"github.com/Kocoro-lab/shan/internal/tools"
+	"github.com/Kocoro-lab/shan/internal/watcher"
 	"github.com/spf13/cobra"
 )
 
@@ -194,6 +197,49 @@ var daemonStartCmd = &cobra.Command{
 		localServer.SetApprovalResolvedNotifier(wsClient.SendApprovalResolved)
 		wsClient.SetEventBus(localServer.EventBus())
 		deps.EventBus = localServer.EventBus()
+
+		// Start file watcher and heartbeat manager.
+		var triggerMu sync.Mutex
+		var fileWatcher *watcher.Watcher
+		var hbManager *heartbeat.Manager
+
+		watchRunFn := func(watchCtx context.Context, agentName, prompt string) {
+			req := daemon.RunAgentRequest{
+				Agent:  agentName,
+				Source: "watcher",
+				Text:   prompt,
+			}
+			handler := &autoApproveHandler{}
+			result, err := daemon.RunAgent(watchCtx, deps, req, handler)
+			if err != nil {
+				log.Printf("daemon: watcher agent %q error: %v", agentName, err)
+				return
+			}
+			log.Printf("daemon: watcher agent %q reply (%d tokens): %s", agentName, result.Usage.TotalTokens, truncateReply(result.Reply, 200))
+		}
+		_ = watchRunFn // used by reload callback in next commit
+
+		agentWatches := collectAgentWatches(agentsDir)
+		if len(agentWatches) > 0 {
+			fw, err := watcher.New(agentWatches, watchRunFn)
+			if err != nil {
+				log.Printf("daemon: watcher init failed: %v", err)
+			} else {
+				fw.Start(ctx)
+				fileWatcher = fw
+				log.Printf("daemon: file watcher started (%d agents)", len(agentWatches))
+			}
+		}
+
+		hbMgr, err := heartbeat.New(agentsDir, deps)
+		if err != nil {
+			log.Printf("daemon: heartbeat init failed: %v", err)
+		} else {
+			hbMgr.Start(ctx)
+			hbManager = hbMgr
+			log.Printf("daemon: heartbeat manager started")
+		}
+
 		broker.SetOnRequest(func(requestID, tool, args string) {
 			if localServer.EventBus() != nil {
 				payload, _ := json.Marshal(map[string]string{
@@ -219,6 +265,18 @@ var daemonStartCmd = &cobra.Command{
 
 		log.Printf("daemon: connecting to %s", wsEndpoint)
 		wsClient.RunWithReconnect(ctx)
+
+		triggerMu.Lock()
+		if fileWatcher != nil {
+			fileWatcher.Close()
+			fileWatcher = nil
+		}
+		if hbManager != nil {
+			hbManager.Close()
+			hbManager = nil
+		}
+		triggerMu.Unlock()
+
 		sessionCache.CloseAll()
 		return nil
 	},
@@ -390,6 +448,18 @@ func (h *daemonEventHandler) OnApprovalNeeded(tool string, args string) bool {
 	return decision == daemon.DecisionAllow || decision == daemon.DecisionAlwaysAllow
 }
 
+// autoApproveHandler is a minimal EventHandler for internal triggers (watcher, heartbeat).
+type autoApproveHandler struct{}
+
+func (h *autoApproveHandler) OnToolCall(name string, args string) {}
+func (h *autoApproveHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
+	log.Printf("daemon: tool %s completed (%.1fs)", name, elapsed.Seconds())
+}
+func (h *autoApproveHandler) OnText(text string)            {}
+func (h *autoApproveHandler) OnStreamDelta(delta string)    {}
+func (h *autoApproveHandler) OnUsage(usage agent.TurnUsage) {}
+func (h *autoApproveHandler) OnApprovalNeeded(tool string, args string) bool { return true }
+
 func containsString(slice []string, s string) bool {
 	for _, v := range slice {
 		if v == s {
@@ -431,6 +501,34 @@ func stopExistingDaemon(pidPath string) {
 			}
 		}
 	}
+}
+
+func truncateReply(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+func collectAgentWatches(agentsDir string) map[string][]watcher.WatchEntry {
+	result := make(map[string][]watcher.WatchEntry)
+	names, err := agents.ListAgents(agentsDir)
+	if err != nil {
+		return result
+	}
+	for _, name := range names {
+		a, err := agents.LoadAgent(agentsDir, name)
+		if err != nil || a.Config == nil || len(a.Config.Watch) == 0 {
+			continue
+		}
+		for _, w := range a.Config.Watch {
+			result[name] = append(result[name], watcher.WatchEntry{
+				Path: w.Path,
+				Glob: w.Glob,
+			})
+		}
+	}
+	return result
 }
 
 func init() {

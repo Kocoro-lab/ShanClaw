@@ -7,7 +7,7 @@ Interactive AI agent CLI powered by Shannon. Named agents with independent instr
 ### Option A: npm (Recommended)
 
 ```bash
-npm install -g @kocoro/shan
+npm install -g @kocoro/shanclaw
 ```
 
 Auto-updates on every launch — no manual upgrading needed.
@@ -50,7 +50,7 @@ shan auto-updates when you launch it. You can also update explicitly:
 
 ```bash
 shan update              # manual update
-npm update -g @kocoro/shan  # if installed via npm (re-runs postinstall to fetch latest)
+npm update -g @kocoro/shanclaw  # if installed via npm (re-runs postinstall to fetch latest)
 ```
 
 ## Setup

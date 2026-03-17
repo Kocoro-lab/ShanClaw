@@ -11,7 +11,7 @@ import (
 )
 
 const repoOwner = "Kocoro-lab"
-const repoName = "shan"
+const repoName = "ShanClaw"
 
 func CheckForUpdate(currentVersion string) (*selfupdate.Release, bool, error) {
 	// Skip update check for non-semver versions (e.g. "dev")

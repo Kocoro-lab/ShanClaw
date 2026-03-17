@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 )
 
 // mockTool implements agent.Tool for testing.

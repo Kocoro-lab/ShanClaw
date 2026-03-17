@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 func TestToolRegistry_Get(t *testing.T) {

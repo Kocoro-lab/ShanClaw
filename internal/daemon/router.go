@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/ShanClaw/internal/session"
 )
 
 type routeEntry struct {

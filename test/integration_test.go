@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/client"
-	"github.com/Kocoro-lab/shan/internal/tools"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/tools"
 )
 
 func TestEndToEnd_FileReadAndAnalyze(t *testing.T) {

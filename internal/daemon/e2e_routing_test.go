@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/ShanClaw/internal/session"
 )
 
 // TestE2E_RouteKeyComputation verifies route keys for all entry-point scenarios.

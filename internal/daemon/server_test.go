@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/config"
 	"gopkg.in/yaml.v3"
 )
 

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 // ServerTool wraps a server-side tool schema and proxies execution

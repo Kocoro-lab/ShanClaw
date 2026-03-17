@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 // nativeResponse builds a /v1/completions response for tests.

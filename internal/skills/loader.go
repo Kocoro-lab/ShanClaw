@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/Kocoro-lab/shan/internal/skills/bundled"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills/bundled"
 	"github.com/adrg/frontmatter"
 	"gopkg.in/yaml.v3"
 )

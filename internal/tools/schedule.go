@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/schedule"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/schedule"
 )
 
 type ScheduleTool struct {

@@ -17,7 +17,7 @@ Auto-updates on every launch — no manual upgrading needed.
 Downloads the latest release binary to `/usr/local/bin`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/shan/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/ShanClaw/main/install.sh | sh
 ```
 
 ### Option C: Build from Source
@@ -25,7 +25,7 @@ curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/shan/main/install.sh | s
 Requires **Go 1.25+**:
 
 ```bash
-git clone https://github.com/Kocoro-lab/shan.git
+git clone https://github.com/Kocoro-lab/ShanClaw.git
 cd shan
 go install .
 ```

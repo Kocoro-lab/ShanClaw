@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
 )
 
 func TestAgentToAPI_Minimal(t *testing.T) {

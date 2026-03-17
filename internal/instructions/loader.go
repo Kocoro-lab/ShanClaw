@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/Kocoro-lab/shan/internal/agents"
+	"github.com/Kocoro-lab/ShanClaw/internal/agents"
 )
 
 // maxCommandFileChars is the maximum character count for a single custom command file.

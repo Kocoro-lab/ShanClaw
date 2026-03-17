@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	ctxwin "github.com/Kocoro-lab/shan/internal/context"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	ctxwin "github.com/Kocoro-lab/ShanClaw/internal/context"
 )
 
 // MemoryAppendTool appends entries to the agent's MEMORY.md via BoundedAppend,

@@ -11,7 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/Kocoro-lab/shan/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
 )
 
 var agentNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)

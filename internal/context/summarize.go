@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 const summarizePrompt = `Compress the following conversation into a concise summary. Capture:

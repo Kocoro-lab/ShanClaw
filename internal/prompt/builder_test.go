@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
 )
 
 func TestBuildSystemPrompt_FullAssembly(t *testing.T) {

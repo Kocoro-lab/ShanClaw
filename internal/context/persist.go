@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 const (

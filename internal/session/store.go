@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 // MessageMeta holds per-message metadata not sent to the LLM gateway.

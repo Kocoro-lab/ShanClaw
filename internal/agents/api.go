@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Kocoro-lab/shan/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
 	"gopkg.in/yaml.v3"
 )
 

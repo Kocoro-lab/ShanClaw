@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/client"
-	"github.com/Kocoro-lab/shan/internal/config"
-	ctxwin "github.com/Kocoro-lab/shan/internal/context"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	ctxwin "github.com/Kocoro-lab/ShanClaw/internal/context"
 )
 
 // TestPersistLearningsIntegration tests PersistLearnings with a real LLM call.

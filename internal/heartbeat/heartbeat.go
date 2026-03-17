@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/agents"
-	"github.com/Kocoro-lab/shan/internal/daemon"
-	"github.com/Kocoro-lab/shan/internal/watcher"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agents"
+	"github.com/Kocoro-lab/ShanClaw/internal/daemon"
+	"github.com/Kocoro-lab/ShanClaw/internal/watcher"
 )
 
 const maxChecklistChars = 4000

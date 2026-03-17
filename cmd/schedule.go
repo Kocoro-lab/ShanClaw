@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
-	"github.com/Kocoro-lab/shan/internal/config"
-	"github.com/Kocoro-lab/shan/internal/schedule"
+	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/schedule"
 	"github.com/spf13/cobra"
 )
 

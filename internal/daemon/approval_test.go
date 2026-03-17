@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/config"
-	"github.com/Kocoro-lab/shan/internal/permissions"
+	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/permissions"
 )
 
 func TestApprovalBroker_RequestResolve(t *testing.T) {

@@ -10,16 +10,16 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/agents"
-	"github.com/Kocoro-lab/shan/internal/audit"
-	"github.com/Kocoro-lab/shan/internal/client"
-	"github.com/Kocoro-lab/shan/internal/config"
-	"github.com/Kocoro-lab/shan/internal/hooks"
-	"github.com/Kocoro-lab/shan/internal/schedule"
-	"github.com/Kocoro-lab/shan/internal/session"
-	"github.com/Kocoro-lab/shan/internal/skills"
-	"github.com/Kocoro-lab/shan/internal/tools"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agents"
+	"github.com/Kocoro-lab/ShanClaw/internal/audit"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/hooks"
+	"github.com/Kocoro-lab/ShanClaw/internal/schedule"
+	"github.com/Kocoro-lab/ShanClaw/internal/session"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/tools"
 )
 
 // RunAgentRequest is the input for RunAgent.

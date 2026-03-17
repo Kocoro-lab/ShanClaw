@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/agents"
+	"github.com/Kocoro-lab/ShanClaw/internal/agents"
 	"github.com/adhocore/gronx"
 )
 

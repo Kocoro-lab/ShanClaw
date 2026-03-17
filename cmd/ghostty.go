@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Kocoro-lab/shan/internal/agents"
-	"github.com/Kocoro-lab/shan/internal/config"
-	"github.com/Kocoro-lab/shan/internal/tools"
+	"github.com/Kocoro-lab/ShanClaw/internal/agents"
+	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/tools"
 	"github.com/spf13/cobra"
 )
 

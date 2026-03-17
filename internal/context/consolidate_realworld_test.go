@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 // TestConsolidateMemory_RealWorld exercises the full consolidation flow against

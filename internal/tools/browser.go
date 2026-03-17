@@ -11,7 +11,7 @@ import (
 
 	"github.com/chromedp/chromedp"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 )
 
 // backend tracks which browser engine is active.

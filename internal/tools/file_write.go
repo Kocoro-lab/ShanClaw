@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 )
 
 type FileWriteTool struct{}

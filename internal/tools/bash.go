@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 )
 
 type BashTool struct {

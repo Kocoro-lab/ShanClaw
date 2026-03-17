@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 )
 
 type ScreenshotTool struct{}

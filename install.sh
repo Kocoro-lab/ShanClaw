@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="Kocoro-lab/shan"
+REPO="Kocoro-lab/ShanClaw"
 INSTALL_DIR="/usr/local/bin"
 
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')

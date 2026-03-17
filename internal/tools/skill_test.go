@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
 )
 
 func TestUseSkill_HappyPath(t *testing.T) {

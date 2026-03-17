@@ -14,14 +14,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/audit"
-	"github.com/Kocoro-lab/shan/internal/client"
-	ctxwin "github.com/Kocoro-lab/shan/internal/context"
-	"github.com/Kocoro-lab/shan/internal/hooks"
-	"github.com/Kocoro-lab/shan/internal/instructions"
-	"github.com/Kocoro-lab/shan/internal/permissions"
-	"github.com/Kocoro-lab/shan/internal/prompt"
-	"github.com/Kocoro-lab/shan/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/audit"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
+	ctxwin "github.com/Kocoro-lab/ShanClaw/internal/context"
+	"github.com/Kocoro-lab/ShanClaw/internal/hooks"
+	"github.com/Kocoro-lab/ShanClaw/internal/instructions"
+	"github.com/Kocoro-lab/ShanClaw/internal/permissions"
+	"github.com/Kocoro-lab/ShanClaw/internal/prompt"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
 )
 
 // ErrMaxIterReached is returned when the agent loop hits the iteration limit

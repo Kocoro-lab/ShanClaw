@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 )
 
 type SystemInfoTool struct{}

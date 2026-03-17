@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/ShanClaw/internal/session"
 )
 
 func TestRenderStartupHeader_FirstFrame(t *testing.T) {

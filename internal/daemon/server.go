@@ -17,13 +17,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/agents"
-	"github.com/Kocoro-lab/shan/internal/config"
-	"github.com/Kocoro-lab/shan/internal/schedule"
-	"github.com/Kocoro-lab/shan/internal/session"
-	"github.com/Kocoro-lab/shan/internal/skills"
-	"github.com/Kocoro-lab/shan/internal/tools"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agents"
+	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/schedule"
+	"github.com/Kocoro-lab/ShanClaw/internal/session"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/tools"
 	"gopkg.in/yaml.v3"
 )
 

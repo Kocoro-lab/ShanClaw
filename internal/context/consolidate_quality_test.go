@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 // TestConsolidateMemory_LLMQuality calls the real gateway to verify the

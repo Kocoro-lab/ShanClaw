@@ -6,7 +6,7 @@ builds:
     env:
       - CGO_ENABLED=0
     ldflags:
-      - -s -w -X github.com/Kocoro-lab/shan/cmd.Version={{.Version}}
+      - -s -w -X github.com/Kocoro-lab/ShanClaw/cmd.Version={{.Version}}
     goos:
       - darwin
       - linux

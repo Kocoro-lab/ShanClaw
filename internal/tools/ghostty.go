@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 )
 
 func agentColor(name string) string {

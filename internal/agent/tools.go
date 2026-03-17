@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 type ToolInfo struct {

@@ -8,10 +8,10 @@ import (
 	"io"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/audit"
-	"github.com/Kocoro-lab/shan/internal/hooks"
-	"github.com/Kocoro-lab/shan/internal/permissions"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/audit"
+	"github.com/Kocoro-lab/ShanClaw/internal/hooks"
+	"github.com/Kocoro-lab/ShanClaw/internal/permissions"
 )
 
 // JSON-RPC 2.0 types.

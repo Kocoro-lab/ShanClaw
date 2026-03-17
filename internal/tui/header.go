@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/ShanClaw/internal/session"
 )
 
 // Color palette for the startup header.

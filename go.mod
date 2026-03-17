@@ -1,4 +1,4 @@
-module github.com/Kocoro-lab/shan
+module github.com/Kocoro-lab/ShanClaw
 
 go 1.25.7
 

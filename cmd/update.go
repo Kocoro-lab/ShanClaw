@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Kocoro-lab/shan/internal/update"
+	"github.com/Kocoro-lab/ShanClaw/internal/update"
 )
 
 var updateCmd = &cobra.Command{

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/client"
-	"github.com/Kocoro-lab/shan/internal/session"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/session"
 )
 
 func TestSessionCache_GetOrCreate_NewAgent(t *testing.T) {

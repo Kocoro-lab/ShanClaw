@@ -3,7 +3,7 @@ package context
 import (
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 func TestEstimateTokens(t *testing.T) {

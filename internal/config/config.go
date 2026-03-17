@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/Kocoro-lab/shan/internal/hooks"
-	"github.com/Kocoro-lab/shan/internal/mcp"
-	"github.com/Kocoro-lab/shan/internal/permissions"
+	"github.com/Kocoro-lab/ShanClaw/internal/hooks"
+	"github.com/Kocoro-lab/ShanClaw/internal/mcp"
+	"github.com/Kocoro-lab/ShanClaw/internal/permissions"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )

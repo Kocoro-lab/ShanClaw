@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 // TestAgentLoop_CompactionAndMemoryPersist verifies the full compaction chain:

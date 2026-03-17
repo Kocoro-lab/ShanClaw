@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/agents"
-	"github.com/Kocoro-lab/shan/internal/client"
-	"github.com/Kocoro-lab/shan/internal/config"
-	"github.com/Kocoro-lab/shan/internal/mcp"
-	"github.com/Kocoro-lab/shan/internal/schedule"
-	"github.com/Kocoro-lab/shan/internal/session"
-	"github.com/Kocoro-lab/shan/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agents"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/mcp"
+	"github.com/Kocoro-lab/ShanClaw/internal/schedule"
+	"github.com/Kocoro-lab/ShanClaw/internal/session"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
 )
 
 // RegisterLocalTools registers only the local tools.

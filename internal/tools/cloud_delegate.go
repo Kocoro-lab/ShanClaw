@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 type CloudDelegateTool struct {

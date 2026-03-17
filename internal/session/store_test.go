@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Kocoro-lab/shan/internal/client"
+	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
 func TestStore_SaveLoad(t *testing.T) {

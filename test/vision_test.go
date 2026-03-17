@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Kocoro-lab/shan/internal/tools"
+	"github.com/Kocoro-lab/ShanClaw/internal/tools"
 )
 
 func TestVisionLoop_ScreenshotReturnsImage(t *testing.T) {

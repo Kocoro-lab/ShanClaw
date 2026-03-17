@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
-	"github.com/Kocoro-lab/shan/internal/skills"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/skills"
 )
 
 type useSkillTool struct {

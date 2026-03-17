@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/Kocoro-lab/shan/internal/agent"
+	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 )
 
 // WaitTool wraps the ax_server wait_for method.

@@ -38,6 +38,11 @@ var daemonStartCmd = &cobra.Command{
 	Use:   "start",
 	Short: "Start the daemon (connects to Shannon Cloud for channel messages)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		detach, _ := cmd.Flags().GetBool("detach")
+		if detach {
+			return daemonStartDetached()
+		}
+
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("config: %w", err)
@@ -50,6 +55,10 @@ var daemonStartCmd = &cobra.Command{
 		force, _ := cmd.Flags().GetBool("force")
 		if force {
 			stopExistingDaemon(pidPath)
+		}
+
+		if daemon.IsDaemonServiceLoaded() {
+			log.Println("Warning: daemon is managed by launchd. Use 'shan daemon stop' to remove launchd management.")
 		}
 
 		pidFile, err := daemon.AcquirePIDFile(pidPath)
@@ -321,6 +330,13 @@ var daemonStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the background daemon",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if daemon.IsDaemonServiceLoaded() {
+			if err := daemon.LaunchctlBootout(); err != nil {
+				log.Printf("Warning: launchctl bootout failed: %v", err)
+			}
+			daemon.RemoveDaemonPlist()
+		}
+
 		pidPath := filepath.Join(config.ShannonDir(), "daemon.pid")
 
 		// Try graceful HTTP shutdown first.
@@ -428,6 +444,11 @@ var daemonStatusCmd = &cobra.Command{
 		}
 		uptime := time.Duration(status.Uptime) * time.Second
 		fmt.Printf("Uptime:    %s\n", uptime)
+		if daemon.IsDaemonServiceLoaded() {
+			fmt.Printf("Launchd:   managed\n")
+		} else {
+			fmt.Printf("Launchd:   not installed\n")
+		}
 		return nil
 	},
 }
@@ -538,6 +559,37 @@ func stopExistingDaemon(pidPath string) {
 	}
 }
 
+func daemonStartDetached() error {
+	shanDir := config.ShannonDir()
+	pidPath := filepath.Join(shanDir, "daemon.pid")
+
+	if _, locked := daemon.IsLocked(pidPath); locked {
+		return fmt.Errorf("daemon is already running (PID file locked)")
+	}
+
+	logDir := filepath.Join(shanDir, "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+	logPath := filepath.Join(logDir, "daemon.log")
+
+	plistContent := daemon.GenerateDaemonPlist(daemon.ShanBinary(), logPath)
+	plistPath := daemon.DaemonPlistPath()
+	if err := daemon.WriteDaemonPlist(plistPath, plistContent); err != nil {
+		return fmt.Errorf("write plist: %w", err)
+	}
+
+	if err := daemon.LaunchctlBootstrap(plistPath); err != nil {
+		return fmt.Errorf("launchctl bootstrap: %w", err)
+	}
+
+	fmt.Printf("Daemon started via launchd.\n")
+	fmt.Printf("  Plist: %s\n", plistPath)
+	fmt.Printf("  Logs:  %s\n", logPath)
+	fmt.Printf("Use 'shan daemon stop' to stop.\n")
+	return nil
+}
+
 func truncateReply(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -568,6 +620,7 @@ func collectAgentWatches(agentsDir string) map[string][]watcher.WatchEntry {
 
 func init() {
 	daemonStartCmd.Flags().Bool("force", false, "Stop any existing daemon before starting")
+	daemonStartCmd.Flags().BoolP("detach", "d", false, "Run as background service via launchd (macOS only)")
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
 	daemonCmd.AddCommand(daemonStatusCmd)

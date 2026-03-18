@@ -243,9 +243,14 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	}
 
 	// Persist session to disk
+	now := time.Now()
 	sess.Messages = append(sess.Messages,
 		client.Message{Role: "user", Content: client.NewTextContent(query)},
 		client.Message{Role: "assistant", Content: client.NewTextContent(result)},
+	)
+	sess.MessageMeta = append(sess.MessageMeta,
+		session.MessageMeta{Source: "local", Timestamp: session.TimePtr(now)},
+		session.MessageMeta{Source: "local", Timestamp: session.TimePtr(time.Now())},
 	)
 	if saveErr := sessMgr.Save(); saveErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to save session: %v\n", saveErr)

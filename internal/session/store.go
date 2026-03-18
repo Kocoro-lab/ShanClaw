@@ -12,11 +12,15 @@ import (
 	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
+// TimePtr returns a pointer to t, for use in MessageMeta literals.
+func TimePtr(t time.Time) *time.Time { return &t }
+
 // MessageMeta holds per-message metadata not sent to the LLM gateway.
 // Indexed parallel to Session.Messages.
 type MessageMeta struct {
-	Source    string `json:"source,omitempty"`     // "slack", "line", "shanclaw", "webhook"
-	MessageID string `json:"message_id,omitempty"` // stable ID for dedup (e.g. "msg-<uuid>")
+	Source    string    `json:"source,omitempty"`     // "local", "slack", "line", "shanclaw", "webhook", "scheduler"
+	MessageID string    `json:"message_id,omitempty"` // stable ID for dedup (e.g. "msg-<uuid>")
+	Timestamp *time.Time `json:"timestamp,omitempty"` // when this message was sent/received; nil = legacy (pre-timestamp)
 }
 
 type Session struct {

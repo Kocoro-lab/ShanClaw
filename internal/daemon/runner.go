@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Kocoro-lab/ShanClaw/internal/agent"
 	"github.com/Kocoro-lab/ShanClaw/internal/agents"
@@ -316,6 +317,7 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	// before the agent loop so the UI can display it immediately on notification.
 	// preLoopUserAppended tracks the in-memory append (not save success) to prevent
 	// double-appending in the post-loop persist block.
+	userMsgTime := time.Now()
 	var preLoopUserAppended bool
 	if !req.Ephemeral && req.Source != "" {
 		source := req.Source
@@ -327,7 +329,7 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 			client.Message{Role: "user", Content: client.NewTextContent(prompt)},
 		)
 		sess.MessageMeta = append(sess.MessageMeta,
-			session.MessageMeta{Source: source, MessageID: msgID},
+			session.MessageMeta{Source: source, MessageID: msgID, Timestamp: session.TimePtr(userMsgTime)},
 		)
 		preLoopUserAppended = true
 		if err := sessMgr.Save(); err != nil {
@@ -487,7 +489,7 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 				client.Message{Role: "user", Content: client.NewTextContent(prompt)},
 			)
 			sess.MessageMeta = append(sess.MessageMeta,
-				session.MessageMeta{Source: source},
+				session.MessageMeta{Source: source, Timestamp: session.TimePtr(userMsgTime)},
 			)
 		}
 		// Persist any messages injected mid-run (HITL follow-ups).
@@ -496,14 +498,15 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 				client.Message{Role: "user", Content: client.NewTextContent(injMsg)},
 			)
 			sess.MessageMeta = append(sess.MessageMeta,
-				session.MessageMeta{Source: source},
+				session.MessageMeta{Source: source, Timestamp: session.TimePtr(time.Now())},
 			)
 		}
+		replyTime := time.Now()
 		sess.Messages = append(sess.Messages,
 			client.Message{Role: "assistant", Content: client.NewTextContent(result)},
 		)
 		sess.MessageMeta = append(sess.MessageMeta,
-			session.MessageMeta{Source: source},
+			session.MessageMeta{Source: source, Timestamp: session.TimePtr(replyTime)},
 		)
 		if err := sessMgr.Save(); err != nil {
 			log.Printf("daemon: failed to save session: %v", err)

@@ -938,6 +938,7 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 			sess.Messages = append(sess.Messages, client.Message{
 				Role: "user", Content: client.NewTextContent(input),
 			})
+			sess.MessageMeta = append(sess.MessageMeta, session.MessageMeta{Source: "local", Timestamp: session.TimePtr(time.Now())})
 		default:
 			m.appendOutput("(injection queue full — message dropped)")
 		}
@@ -953,7 +954,9 @@ func (m *Model) handleSubmit() (tea.Model, tea.Cmd) {
 	if sess.Title == "New session" {
 		sess.Title = session.Title(input)
 	}
+	userMsgTime := time.Now()
 	sess.Messages = append(sess.Messages, client.Message{Role: "user", Content: client.NewTextContent(input)})
+	sess.MessageMeta = append(sess.MessageMeta, session.MessageMeta{Source: "local", Timestamp: session.TimePtr(userMsgTime)})
 
 	m.spinnerIdx = 0
 	m.glyphIdx = 0
@@ -980,6 +983,7 @@ func (m *Model) runAgentLoop(query string, history []client.Message) tea.Cmd {
 		if result != "" && (err == nil || errors.Is(err, agent.ErrMaxIterReached)) {
 			sess := m.sessions.Current()
 			sess.Messages = append(sess.Messages, client.Message{Role: "assistant", Content: client.NewTextContent(result)})
+			sess.MessageMeta = append(sess.MessageMeta, session.MessageMeta{Source: "local", Timestamp: session.TimePtr(time.Now())})
 		}
 		return agentDoneMsg{result: result, usage: usage, err: err}
 	}
@@ -1563,9 +1567,14 @@ func (m *Model) runRemote(query string, ctx map[string]any, strategy string) tea
 		if finalResult != "" {
 				m.sendMarkdownOutput(finalResult, m.renderMarkdownCached(finalResult, m.width))
 			sess := m.sessions.Current()
+			workflowUserTime := time.Now()
 			sess.Messages = append(sess.Messages,
 				client.Message{Role: "user", Content: client.NewTextContent(query)},
 				client.Message{Role: "assistant", Content: client.NewTextContent(finalResult)},
+			)
+			sess.MessageMeta = append(sess.MessageMeta,
+				session.MessageMeta{Source: "local", Timestamp: session.TimePtr(workflowUserTime)},
+				session.MessageMeta{Source: "local", Timestamp: session.TimePtr(time.Now())},
 			)
 		} else {
 			return agentDoneMsg{err: fmt.Errorf("workflow completed but returned no response")}

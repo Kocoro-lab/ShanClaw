@@ -87,6 +87,7 @@ type MessagePayload struct {
 	Sender    string `json:"sender"`
 	Text      string `json:"text"`
 	AgentName string `json:"agent_name,omitempty"`
+	MessageID string `json:"-"` // set locally from envelope, not from JSON
 	Timestamp string `json:"timestamp"`
 	Source    string `json:"source,omitempty"` // populated by Cloud; "slack", "line", "webhook"
 }

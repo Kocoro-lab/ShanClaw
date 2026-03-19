@@ -103,6 +103,13 @@ func (c *Client) sendProgress(messageID string) error {
 	return c.sendEnvelope(DaemonMessage{Type: MsgTypeProgress, MessageID: messageID})
 }
 
+// SendProgressWithWorkflow sends a progress heartbeat with a workflow_id payload.
+// This tells Cloud to start streaming card replies for the originating channel.
+func (c *Client) SendProgressWithWorkflow(messageID, workflowID string) error {
+	payload, _ := json.Marshal(map[string]string{"workflow_id": workflowID})
+	return c.sendEnvelope(DaemonMessage{Type: MsgTypeProgress, MessageID: messageID, Payload: payload})
+}
+
 // SendReply sends the final reply for a message and cancels its heartbeat.
 func (c *Client) SendReply(messageID string, payload ReplyPayload) error {
 	if cancel, ok := c.activeMsgs.LoadAndDelete(messageID); ok {
@@ -290,6 +297,9 @@ func (c *Client) handleMessage(ctx context.Context, sm ServerMessage) {
 			}
 		}
 	}()
+
+	// Attach envelope messageID so downstream tools can reference it.
+	payload.MessageID = sm.MessageID
 
 	// Set active agent.
 	agentName := payload.AgentName

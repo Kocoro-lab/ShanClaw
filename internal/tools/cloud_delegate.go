@@ -10,13 +10,18 @@ import (
 	"github.com/Kocoro-lab/ShanClaw/internal/client"
 )
 
+// OnWorkflowStartedFunc is called when cloud_delegate gets a workflow_id from Cloud.
+// Used by daemon mode to send progress with workflow_id for streaming card replies.
+type OnWorkflowStartedFunc func(workflowID string)
+
 type CloudDelegateTool struct {
-	gw          *client.GatewayClient
-	apiKey      string
-	timeout     time.Duration
-	handler     agent.EventHandler
-	agentName   string
-	agentPrompt string
+	gw                 *client.GatewayClient
+	apiKey             string
+	timeout            time.Duration
+	handler            agent.EventHandler
+	agentName          string
+	agentPrompt        string
+	onWorkflowStarted OnWorkflowStartedFunc
 }
 
 type cloudDelegateArgs struct {
@@ -40,6 +45,11 @@ func NewCloudDelegateTool(gw *client.GatewayClient, apiKey string, timeout time.
 // at registration time (e.g., TUI creates handler per-run).
 func (t *CloudDelegateTool) SetHandler(h agent.EventHandler) {
 	t.handler = h
+}
+
+// SetOnWorkflowStarted sets the callback invoked when Cloud returns a workflow_id.
+func (t *CloudDelegateTool) SetOnWorkflowStarted(fn OnWorkflowStartedFunc) {
+	t.onWorkflowStarted = fn
 }
 
 // SetAgentContext updates the agent identity forwarded to Shannon Cloud.
@@ -132,6 +142,11 @@ func (t *CloudDelegateTool) Run(ctx context.Context, argsJSON string) (agent.Too
 		return agent.ToolResult{Content: fmt.Sprintf("failed to submit task: %v", err), IsError: true}, nil
 	}
 
+	// Notify daemon of workflow_id so Cloud can start streaming card replies
+	if t.onWorkflowStarted != nil && resp.WorkflowID != "" {
+		t.onWorkflowStarted(resp.WorkflowID)
+	}
+
 	// Resolve stream URL
 	streamURL := resp.StreamURL
 	if streamURL == "" {
@@ -166,8 +181,8 @@ func (t *CloudDelegateTool) Run(ctx context.Context, argsJSON string) (agent.Too
 		switch ev.Event {
 		// --- Streaming deltas ---
 		case "thread.message.delta", "LLM_PARTIAL":
-			// Only stream deltas from final_output / swarm-lead to user
-			if t.handler != nil && (event.AgentID == "final_output" || event.AgentID == "swarm-lead") {
+			// Only stream deltas from synthesis / final_output / swarm-lead / single-agent (empty) to user
+			if t.handler != nil && (event.AgentID == "final_output" || event.AgentID == "swarm-lead" || event.AgentID == "synthesis" || event.AgentID == "") {
 				delta := event.Delta
 				if delta == "" {
 					delta = event.Message
@@ -216,9 +231,7 @@ func (t *CloudDelegateTool) Run(ctx context.Context, argsJSON string) (agent.Too
 			}
 			go t.gw.ApproveReviewPlan(timeoutCtx, resp.WorkflowID)
 
-		// --- Status events — stream as formatted lines ---
-		case "WORKFLOW_STARTED":
-			t.streamStatus("  > Starting workflow...")
+		// --- Status events — only surface user-facing milestones ---
 		case "AGENT_STARTED":
 			t.streamStatus("  > " + statusMsg(event.AgentID, event.Message, "Agent working..."))
 		case "AGENT_COMPLETED":
@@ -227,26 +240,19 @@ func (t *CloudDelegateTool) Run(ctx context.Context, argsJSON string) (agent.Too
 			if len(event.Message) <= 100 {
 				t.streamStatus("  ~ " + statusMsg("", event.Message, "Thinking..."))
 			}
-		case "DELEGATION":
-			t.streamStatus("  > " + statusMsg("", event.Message, "Delegating task..."))
 		case "TOOL_INVOKED", "TOOL_STARTED":
 			t.streamStatus("  ? " + statusMsg("", event.Message, "Calling tool..."))
-		case "TOOL_OBSERVATION", "TOOL_COMPLETED":
-			t.streamStatus("  * " + statusMsg("", event.Message, "Tool completed"))
-		case "PROGRESS", "STATUS_UPDATE":
-			t.streamStatus("  > " + statusMsg("", event.Message, "Processing..."))
-		case "DATA_PROCESSING":
-			t.streamStatus("  > " + statusMsg("", event.Message, "Processing data..."))
-		case "WAITING":
-			t.streamStatus("  . " + statusMsg("", event.Message, "Waiting..."))
+
+		// --- Internal plumbing — silently ignore ---
+		case "WORKFLOW_STARTED", "TOOL_OBSERVATION", "TOOL_COMPLETED",
+			"DELEGATION", "PROGRESS", "STATUS_UPDATE", "DATA_PROCESSING", "WAITING":
+			// Drop — these are too verbose for the desktop UI
 		case "APPROVAL_DECISION":
 			// no-op
 
 		// --- Swarm-specific events ---
 		case "LEAD_DECISION":
-			if msg := event.Message; msg != "" && len(msg) <= 150 {
-				t.streamStatus("  ~ " + msg)
-			}
+			// Internal — drop
 		case "TASKLIST_UPDATED":
 			if payload := event.Payload; payload != nil {
 				if tasks, ok := payload["tasks"].([]interface{}); ok && len(tasks) > 0 {
@@ -262,9 +268,7 @@ func (t *CloudDelegateTool) Run(ctx context.Context, argsJSON string) (agent.Too
 				}
 			}
 		case "HITL_RESPONSE":
-			if event.Message != "" {
-				t.streamStatus("  ~ Lead responding to your input")
-			}
+			// Internal — drop
 
 		case "WORKFLOW_COMPLETED":
 			if finalResult == "" {

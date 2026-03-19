@@ -126,6 +126,18 @@ var daemonStartCmd = &cobra.Command{
 		var broker *daemon.ApprovalBroker
 
 		wsClient = daemon.NewClient(wsEndpoint, cfg.APIKey, func(msg daemon.MessagePayload) string {
+			// Wire cloud_delegate workflow_id notification for streaming card replies.
+			if msg.MessageID != "" {
+				if ct, ok := deps.Registry.Get("cloud_delegate"); ok {
+					if cdt, ok := ct.(*tools.CloudDelegateTool); ok {
+						msgID := msg.MessageID // capture for closure
+						cdt.SetOnWorkflowStarted(func(workflowID string) {
+							_ = wsClient.SendProgressWithWorkflow(msgID, workflowID)
+						})
+					}
+				}
+			}
+
 			// Use msg.Source if Cloud populates it; fall back to msg.Channel during rolling deploy
 			source := msg.Source
 			if source == "" {

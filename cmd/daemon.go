@@ -126,11 +126,13 @@ var daemonStartCmd = &cobra.Command{
 		var broker *daemon.ApprovalBroker
 
 		wsClient = daemon.NewClient(wsEndpoint, cfg.APIKey, func(msg daemon.MessagePayload) string {
+			msgCtx := ctx
+
 			// Wire per-message workflow_id callback via context for streaming card replies.
 			// Uses context (not mutable tool field) for concurrency safety.
 			if msg.MessageID != "" {
 				msgID := msg.MessageID
-				ctx = tools.WithOnWorkflowStarted(ctx, func(workflowID string) {
+				msgCtx = tools.WithOnWorkflowStarted(msgCtx, func(workflowID string) {
 					_ = wsClient.SendProgressWithWorkflow(msgID, workflowID)
 				})
 			}
@@ -184,7 +186,7 @@ var daemonStartCmd = &cobra.Command{
 
 			handler := &daemonEventHandler{
 				broker:      broker,
-				ctx:         ctx,
+				ctx:         msgCtx,
 				channel:     msg.Channel,
 				threadID:    msg.ThreadID,
 				agent:       req.Agent,
@@ -193,7 +195,7 @@ var daemonStartCmd = &cobra.Command{
 				deps:        deps,
 			}
 
-			result, err := daemon.RunAgent(ctx, deps, req, handler)
+			result, err := daemon.RunAgent(msgCtx, deps, req, handler)
 			if err != nil {
 				log.Printf("daemon: agent error: %v", err)
 				return fmt.Sprintf("Sorry, I encountered an error: %v", err)

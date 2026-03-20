@@ -236,6 +236,7 @@ func runOneShot(cfg *config.Config, query string, agentOverride *agents.Agent) e
 	tools.RegisterSessionSearch(reg, sessMgr)
 	sess := sessMgr.NewSession()
 	sess.Title = sessionTitleFromQuery(query)
+	loop.SetSessionID(sess.ID)
 
 	result, usage, err := loop.Run(context.Background(), query, nil)
 	if err != nil && !errors.Is(err, agent.ErrMaxIterReached) {

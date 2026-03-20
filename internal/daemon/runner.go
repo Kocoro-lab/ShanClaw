@@ -464,6 +464,7 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	if route != nil && route.injectCh != nil {
 		loop.SetInjectCh(route.injectCh)
 	}
+	loop.SetSessionID(sess.ID)
 
 	result, usage, runErr := loop.Run(ctx, prompt, history)
 	if runErr != nil {

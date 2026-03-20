@@ -22,7 +22,6 @@ func ghosttyAvailable() bool {
 	return compareVersions(strings.TrimSpace(string(ver)), minGhosttyVersion) >= 0
 }
 
-
 // execGhosttyScript runs an AppleScript targeting the Ghostty application.
 func execGhosttyScript(script string) (string, error) {
 	var cmdArgs []string

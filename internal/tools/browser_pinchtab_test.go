@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -358,7 +360,7 @@ func TestBrowser_InfoNewParams(t *testing.T) {
 	info := tool.Info()
 	props := info.Parameters["properties"].(map[string]any)
 
-	newParams := []string{"ref", "query", "filter", "key", "value"}
+	newParams := []string{"ref", "query", "filter", "key", "value", "waitFor", "waitSelector", "blockImages", "blockAds", "textMode", "maxChars", "raw"}
 	for _, p := range newParams {
 		if _, exists := props[p]; !exists {
 			t.Errorf("expected parameter %q in properties", p)
@@ -371,4 +373,164 @@ func TestBrowser_InfoNewParams(t *testing.T) {
 	if !strings.Contains(info.Description, "find") {
 		t.Error("expected description to mention find")
 	}
+}
+
+func TestPinchtab_NavigateParamsForwarded(t *testing.T) {
+	mux := http.NewServeMux()
+	var mu sync.Mutex
+	var got ptNavigateReq
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("/navigate", func(w http.ResponseWriter, r *http.Request) {
+		var req ptNavigateReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode /navigate request: %v", err)
+		}
+		mu.Lock()
+		got = req
+		mu.Unlock()
+		json.NewEncoder(w).Encode(ptNavigateResp{
+			TabID: "tab_test123",
+			URL:   req.URL,
+			Title: "Test Navigate",
+		})
+	})
+	mux.HandleFunc("/tabs", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(ptTabsResp{Tabs: []struct {
+			ID    string `json:"id"`
+			URL   string `json:"url"`
+			Title string `json:"title"`
+		}{}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	tool := newToolWithFakePinchtab(t, srv)
+	defer tool.Cleanup()
+
+	result, err := tool.Run(context.Background(), `{"action":"navigate","url":"https://example.com","blockImages":true,"blockAds":true,"waitFor":"networkidle","waitSelector":"#content"}`)
+	if err != nil {
+		t.Fatalf("navigate error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("navigate failed: %s", result.Content)
+	}
+
+	mu.Lock()
+	gotReq := got
+	mu.Unlock()
+	if !gotReq.BlockImages {
+		t.Error("expected navigate request to include blockImages=true")
+	}
+	if !gotReq.BlockAds {
+		t.Error("expected navigate request to include blockAds=true")
+	}
+	if gotReq.WaitFor != "networkidle" {
+		t.Errorf("expected waitFor=networkidle, got=%q", gotReq.WaitFor)
+	}
+	if gotReq.WaitSelector != "#content" {
+		t.Errorf("expected waitSelector=#content, got=%q", gotReq.WaitSelector)
+	}
+}
+
+func TestPinchtab_ReadPageParamsForwarded(t *testing.T) {
+	mux := http.NewServeMux()
+	var mu sync.Mutex
+	var textQuery url.Values
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("/navigate", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(ptNavigateResp{
+			TabID: "tab_test123",
+			URL:   "https://example.com",
+			Title: "Test Navigate",
+		})
+	})
+	mux.HandleFunc("/text", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		textQuery = r.URL.Query()
+		mu.Unlock()
+		json.NewEncoder(w).Encode(ptTextResp{
+			URL:   "https://example.com",
+			Title: "Test Page",
+			Text:  "some text",
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	tool := newToolWithFakePinchtab(t, srv)
+	defer tool.Cleanup()
+
+	if _, err := tool.Run(context.Background(), `{"action":"navigate","url":"https://example.com"}`); err != nil {
+		t.Fatalf("navigate error: %v", err)
+	}
+
+	result, err := tool.Run(context.Background(), `{"action":"read_page","textMode":"raw","maxChars":123}`)
+	if err != nil {
+		t.Fatalf("read_page error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("read_page failed: %s", result.Content)
+	}
+
+	mu.Lock()
+	got := textQuery
+	mu.Unlock()
+	if got.Get("mode") != "raw" {
+		t.Errorf("expected mode=raw, got=%q", got.Get("mode"))
+	}
+	if got.Get("maxChars") != "123" {
+		t.Errorf("expected maxChars=123, got=%q", got.Get("maxChars"))
+	}
+	if got.Get("tabId") != "tab_test123" {
+		t.Errorf("expected tabId=tab_test123, got=%q", got.Get("tabId"))
+	}
+}
+
+func TestResolvePinchtabBaseURL(t *testing.T) {
+	t.Run("pinchtab_url_preferred_over_bridge_port", func(t *testing.T) {
+		t.Setenv("PINCHTAB_URL", "127.0.0.1:9999")
+		t.Setenv("BRIDGE_PORT", "8888")
+		got := resolvePinchtabBaseURL()
+		want := "http://127.0.0.1:9999"
+		if got != want {
+			t.Fatalf("expected %q, got %q", want, got)
+		}
+	})
+
+	t.Run("pinchtab_url_keeps_path_without_scheme", func(t *testing.T) {
+		t.Setenv("PINCHTAB_URL", "127.0.0.1:7777/api/")
+		t.Setenv("BRIDGE_PORT", "")
+		got := resolvePinchtabBaseURL()
+		want := "http://127.0.0.1:7777/api"
+		if got != want {
+			t.Fatalf("expected %q, got %q", want, got)
+		}
+	})
+
+	t.Run("bridge_port_fallback", func(t *testing.T) {
+		t.Setenv("PINCHTAB_URL", "")
+		t.Setenv("BRIDGE_PORT", "7001")
+		got := resolvePinchtabBaseURL()
+		want := "http://127.0.0.1:7001"
+		if got != want {
+			t.Fatalf("expected %q, got %q", want, got)
+		}
+	})
+
+	t.Run("default_url_when_unset", func(t *testing.T) {
+		t.Setenv("PINCHTAB_URL", "")
+		t.Setenv("BRIDGE_PORT", "")
+		got := resolvePinchtabBaseURL()
+		want := "http://127.0.0.1:9867"
+		if got != want {
+			t.Fatalf("expected %q, got %q", want, got)
+		}
+	})
 }

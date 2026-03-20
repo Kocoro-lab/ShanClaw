@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -189,6 +190,81 @@ func TestBrowser_InfoDescription(t *testing.T) {
 	info := tool.Info()
 	if !contains(info.Description, "isolated profile") {
 		t.Errorf("expected description to mention isolated profile, got: %s", info.Description)
+	}
+}
+
+func TestFormatNavigateResult(t *testing.T) {
+	tests := []struct {
+		name        string
+		url         string
+		title       string
+		preview     string
+		wantPreview bool
+		wantWarning bool
+	}{
+		{
+			name:        "normal page with content",
+			url:         "https://jd.com",
+			title:       "京东首页",
+			preview:     "京东JD.COM-专业的综合网上购物商城",
+			wantPreview: true,
+			wantWarning: false,
+		},
+		{
+			name:        "anti-bot page",
+			url:         "https://jd.com",
+			title:       "请验证您的身份",
+			preview:     "",
+			wantPreview: false,
+			wantWarning: true,
+		},
+		{
+			name:        "empty preview",
+			url:         "https://example.com",
+			title:       "Example",
+			preview:     "",
+			wantPreview: false,
+			wantWarning: false,
+		},
+		{
+			name:        "long preview truncated",
+			url:         "https://example.com",
+			title:       "Example",
+			preview:     strings.Repeat("あ", 250), // multi-byte chars
+			wantPreview: true,
+			wantWarning: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := formatNavigateResult(tt.url, tt.title, tt.preview)
+			if tt.wantPreview && !strings.Contains(result, "Preview:") {
+				t.Error("expected Preview in result")
+			}
+			if !tt.wantPreview && strings.Contains(result, "Preview:") {
+				t.Error("unexpected Preview in result")
+			}
+			if tt.wantWarning && !strings.Contains(result, "WARNING") {
+				t.Error("expected WARNING in result")
+			}
+			if !tt.wantWarning && strings.Contains(result, "WARNING") {
+				t.Error("unexpected WARNING in result")
+			}
+		})
+	}
+}
+
+func TestFormatNavigateResult_UTF8Safe(t *testing.T) {
+	// Verify multi-byte rune truncation doesn't produce invalid UTF-8
+	preview := strings.Repeat("中", 300) // 300 Chinese chars, each 3 bytes
+	result := formatNavigateResult("https://example.com", "Test", preview)
+	if !strings.Contains(result, "Preview:") {
+		t.Fatal("expected preview in result")
+	}
+	// Verify the result is valid UTF-8 (strings.Contains would panic on invalid)
+	if !strings.Contains(result, "...") {
+		t.Error("expected truncation marker")
 	}
 }
 

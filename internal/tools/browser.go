@@ -262,6 +262,30 @@ func (t *BrowserTool) isPinchtab() bool {
 
 // --- Actions ---
 
+// formatNavigateResult builds the navigate result string with anti-bot warning and content preview.
+func formatNavigateResult(pageURL, title, textPreview string) string {
+	content := fmt.Sprintf("Navigated to: %s\nTitle: %s", pageURL, title)
+
+	if detectAntiBotPage(title) {
+		content += "\n\nWARNING: This page appears to be an anti-bot challenge or CAPTCHA. " +
+			"The page content is likely NOT the expected website content. " +
+			"Do NOT attempt to extract data from this page. " +
+			"Report to the user that the site blocked automated access."
+	}
+
+	preview := strings.TrimSpace(textPreview)
+	if preview != "" {
+		const maxPreviewRunes = 200
+		runes := []rune(preview)
+		if len(runes) > maxPreviewRunes {
+			preview = string(runes[:maxPreviewRunes]) + "..."
+		}
+		content += fmt.Sprintf("\nPreview: %s", preview)
+	}
+
+	return content
+}
+
 func (t *BrowserTool) navigate(_ context.Context, args browserArgs, timeout time.Duration) (agent.ToolResult, error) {
 	if t.isPinchtab() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -281,14 +305,21 @@ func (t *BrowserTool) navigate(_ context.Context, args browserArgs, timeout time
 		if resp.TabID != "" {
 			t.tabID = resp.TabID
 		}
-		return agent.ToolResult{Content: fmt.Sprintf("Navigated to: %s\nTitle: %s", resp.URL, resp.Title)}, nil
+
+		// Best-effort content preview — don't fail navigate if text fetch fails
+		var preview string
+		if textResp, err := t.pt.text(ctx, t.tabID, "", 0, false); err == nil {
+			preview = textResp.Text
+		}
+
+		return agent.ToolResult{Content: formatNavigateResult(resp.URL, resp.Title, preview)}, nil
 	}
 
 	// chromedp
 	tCtx, cancel := context.WithTimeout(t.ctx, timeout)
 	defer cancel()
 
-	var title string
+	var title, textContent string
 	err := chromedp.Run(tCtx,
 		chromedp.Navigate(args.URL),
 		chromedp.WaitReady("body", chromedp.ByQuery),
@@ -297,7 +328,14 @@ func (t *BrowserTool) navigate(_ context.Context, args browserArgs, timeout time
 	if err != nil {
 		return agent.ToolResult{Content: fmt.Sprintf("navigate error: %v", err), IsError: true}, nil
 	}
-	return agent.ToolResult{Content: fmt.Sprintf("Navigated to: %s\nTitle: %s", args.URL, title)}, nil
+
+	// Best-effort content preview
+	_ = chromedp.Run(tCtx, chromedp.Evaluate(
+		`(document.querySelector("html")?.innerText || "").substring(0, 300)`,
+		&textContent,
+	))
+
+	return agent.ToolResult{Content: formatNavigateResult(args.URL, title, textContent)}, nil
 }
 
 func (t *BrowserTool) click(_ context.Context, args browserArgs, timeout time.Duration) (agent.ToolResult, error) {

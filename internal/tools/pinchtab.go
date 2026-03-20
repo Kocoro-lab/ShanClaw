@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -29,12 +31,27 @@ type pinchtabClient struct {
 
 func newPinchtabClient() *pinchtabClient {
 	return &pinchtabClient{
-		base: "http://" + pinchtabDefaultAddr,
+		base: resolvePinchtabBaseURL(),
 		http: &http.Client{
 			Timeout:   60 * time.Second,
 			Transport: &http.Transport{MaxIdleConnsPerHost: 4},
 		},
 	}
+}
+
+func resolvePinchtabBaseURL() string {
+	if envURL := strings.TrimSpace(os.Getenv("PINCHTAB_URL")); envURL != "" {
+		if strings.Contains(envURL, "://") {
+			return strings.TrimRight(envURL, "/")
+		}
+		return "http://" + strings.TrimRight(envURL, "/")
+	}
+
+	if envPort := strings.TrimSpace(os.Getenv("BRIDGE_PORT")); envPort != "" {
+		return "http://127.0.0.1:" + envPort
+	}
+
+	return "http://" + pinchtabDefaultAddr
 }
 
 // ensure checks if pinchtab is running, and starts it if the binary is available.
@@ -135,10 +152,13 @@ func (c *pinchtabClient) close() {
 // --- API methods ---
 
 type ptNavigateReq struct {
-	URL         string `json:"url"`
-	TabID       string `json:"tabId,omitempty"`
-	NewTab      bool   `json:"newTab,omitempty"`
-	BlockImages bool   `json:"blockImages,omitempty"`
+	URL          string `json:"url"`
+	TabID        string `json:"tabId,omitempty"`
+	NewTab       bool   `json:"newTab,omitempty"`
+	BlockImages  bool   `json:"blockImages,omitempty"`
+	BlockAds     bool   `json:"blockAds,omitempty"`
+	WaitFor      string `json:"waitFor,omitempty"`
+	WaitSelector string `json:"waitSelector,omitempty"`
 }
 
 type ptNavigateResp struct {
@@ -246,10 +266,18 @@ type ptTextResp struct {
 	Text  string `json:"text"`
 }
 
-func (c *pinchtabClient) text(ctx context.Context, tabID string) (*ptTextResp, error) {
+func (c *pinchtabClient) text(ctx context.Context, tabID, textMode string, maxChars int, raw bool) (*ptTextResp, error) {
 	q := url.Values{}
 	if tabID != "" {
 		q.Set("tabId", tabID)
+	}
+	if textMode != "" {
+		q.Set("mode", textMode)
+	} else if raw {
+		q.Set("mode", "raw")
+	}
+	if maxChars > 0 {
+		q.Set("maxChars", fmt.Sprintf("%d", maxChars))
 	}
 	var resp ptTextResp
 	if err := c.getJSON(ctx, "/text?"+q.Encode(), &resp); err != nil {

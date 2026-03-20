@@ -38,17 +38,24 @@ type BrowserTool struct {
 }
 
 type browserArgs struct {
-	Action   string `json:"action"`
-	URL      string `json:"url,omitempty"`
-	Selector string `json:"selector,omitempty"`
-	Ref      string `json:"ref,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Key      string `json:"key,omitempty"`
-	Value    string `json:"value,omitempty"`
-	Script   string `json:"script,omitempty"`
-	Query    string `json:"query,omitempty"`
-	Filter   string `json:"filter,omitempty"`
-	Timeout  int    `json:"timeout,omitempty"`
+	Action       string `json:"action"`
+	URL          string `json:"url,omitempty"`
+	Selector     string `json:"selector,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	Text         string `json:"text,omitempty"`
+	Key          string `json:"key,omitempty"`
+	Value        string `json:"value,omitempty"`
+	Script       string `json:"script,omitempty"`
+	Query        string `json:"query,omitempty"`
+	Filter       string `json:"filter,omitempty"`
+	WaitFor      string `json:"waitFor,omitempty"`
+	WaitSelector string `json:"waitSelector,omitempty"`
+	BlockImages  bool   `json:"blockImages,omitempty"`
+	BlockAds     bool   `json:"blockAds,omitempty"`
+	TextMode     string `json:"textMode,omitempty"`
+	MaxChars     int    `json:"maxChars,omitempty"`
+	Raw          bool   `json:"raw,omitempty"`
+	Timeout      int    `json:"timeout,omitempty"`
 }
 
 func (t *BrowserTool) Info() agent.ToolInfo {
@@ -72,8 +79,15 @@ func (t *BrowserTool) Info() agent.ToolInfo {
 				"value":    map[string]any{"type": "string", "description": "Value to select (for select action via click with value)"},
 				"script":   map[string]any{"type": "string", "description": "JavaScript to execute (for execute_js action)"},
 				"query":    map[string]any{"type": "string", "description": "Natural language search query (for find action)"},
-				"filter":   map[string]any{"type": "string", "description": "Filter mode: 'interactive' or 'all' (for snapshot action, default: interactive)"},
-				"timeout":  map[string]any{"type": "integer", "description": "Timeout in seconds (default: 30)"},
+				"filter":       map[string]any{"type": "string", "description": "Filter mode: 'interactive' or 'all' (for snapshot action, default: interactive)"},
+				"waitFor":      map[string]any{"type": "string", "description": "Navigation wait strategy: e.g. 'domcontentloaded', 'networkidle' (for navigate action)"},
+				"waitSelector": map[string]any{"type": "string", "description": "CSS selector to wait for after navigation"},
+				"blockImages":  map[string]any{"type": "boolean", "description": "Disable image loading during navigation"},
+				"blockAds":     map[string]any{"type": "boolean", "description": "Enable PinchTab ad blocking during navigation"},
+				"textMode":     map[string]any{"type": "string", "description": "Text extraction mode for read_page (for example: 'readability' or 'raw')"},
+				"maxChars":     map[string]any{"type": "integer", "description": "Maximum characters for read_page output"},
+				"raw":          map[string]any{"type": "boolean", "description": "Convenience flag for read_page raw mode"},
+				"timeout":      map[string]any{"type": "integer", "description": "Timeout in seconds (default: 30)"},
 			},
 		},
 		Required: []string{"action"},
@@ -253,7 +267,14 @@ func (t *BrowserTool) navigate(_ context.Context, args browserArgs, timeout time
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		// Always open a new tab to isolate navigation from previous tasks
-		resp, err := t.pt.navigate(ctx, ptNavigateReq{URL: args.URL, NewTab: true})
+		resp, err := t.pt.navigate(ctx, ptNavigateReq{
+			URL:          args.URL,
+			NewTab:       true,
+			BlockImages:  args.BlockImages,
+			BlockAds:     args.BlockAds,
+			WaitFor:      args.WaitFor,
+			WaitSelector: args.WaitSelector,
+		})
 		if err != nil {
 			return agent.ToolResult{Content: fmt.Sprintf("navigate error: %v", err), IsError: true}, nil
 		}
@@ -445,15 +466,23 @@ func (t *BrowserTool) screenshot(_ context.Context, _ browserArgs, timeout time.
 	}, nil
 }
 
+// isPageContentEmpty returns true if content is empty/whitespace-only.
+func isPageContentEmpty(content string) bool {
+	return strings.TrimSpace(content) == ""
+}
+
 func (t *BrowserTool) readPage(_ context.Context, args browserArgs, timeout time.Duration) (agent.ToolResult, error) {
 	if t.isPinchtab() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		resp, err := t.pt.text(ctx, t.tabID)
+		resp, err := t.pt.text(ctx, t.tabID, args.TextMode, args.MaxChars, args.Raw)
 		if err != nil {
 			return agent.ToolResult{Content: fmt.Sprintf("read_page error: %v", err), IsError: true}, nil
 		}
 		text := resp.Text
+		if isPageContentEmpty(text) {
+			return agent.ToolResult{Content: fmt.Sprintf("URL: %s\nTitle: %s\n\nread_page returned empty content — the page may not have loaded correctly or may be blocked", resp.URL, resp.Title), IsError: true}, nil
+		}
 		const maxLen = 10240
 		if len(text) > maxLen {
 			text = text[:maxLen] + "\n... [truncated to 10KB]"
@@ -478,8 +507,14 @@ func (t *BrowserTool) readPage(_ context.Context, args browserArgs, timeout time
 	if err != nil {
 		// Fall back to outerHTML
 		var html string
-		chromedp.Run(tCtx, chromedp.OuterHTML(selector, &html))
+		if err2 := chromedp.Run(tCtx, chromedp.OuterHTML(selector, &html)); err2 != nil {
+			return agent.ToolResult{Content: fmt.Sprintf("read_page error: %v (fallback: %v)", err, err2), IsError: true}, nil
+		}
 		textContent = html
+	}
+
+	if isPageContentEmpty(textContent) {
+		return agent.ToolResult{Content: "read_page returned empty content — the page may not have loaded correctly or may be blocked", IsError: true}, nil
 	}
 
 	const maxLen = 10240

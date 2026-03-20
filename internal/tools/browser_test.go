@@ -162,6 +162,28 @@ func TestBrowser_CloseWhenNotRunning(t *testing.T) {
 	}
 }
 
+func TestValidatePageContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool // true = content is empty
+	}{
+		{"empty string", "", true},
+		{"whitespace only", "   \n\t  ", true},
+		{"valid content", "Hello world", false},
+		{"short but valid", "Please verify", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isPageContentEmpty(tt.content)
+			if got != tt.want {
+				t.Errorf("isPageContentEmpty(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBrowser_InfoDescription(t *testing.T) {
 	tool := &BrowserTool{}
 	info := tool.Info()

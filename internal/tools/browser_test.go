@@ -191,3 +191,32 @@ func TestBrowser_InfoDescription(t *testing.T) {
 		t.Errorf("expected description to mention isolated profile, got: %s", info.Description)
 	}
 }
+
+func TestDetectAntiBotPage(t *testing.T) {
+	tests := []struct {
+		title string
+		want  bool
+	}{
+		{"京东-综合网购首选-正品低价", false},
+		{"Google", false},
+		{"请验证您的身份", true},
+		{"Just a moment...", true},
+		{"Verify you are human", true},
+		{"Access Denied", true},
+		{"Attention Required! | Cloudflare", true},
+		{"Are you a robot?", true},
+		{"Security Check", true},
+		{"Please wait while we verify", true},
+		{"Robot Check", true},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.title, func(t *testing.T) {
+			got := detectAntiBotPage(tt.title)
+			if got != tt.want {
+				t.Errorf("detectAntiBotPage(%q) = %v, want %v", tt.title, got, tt.want)
+			}
+		})
+	}
+}

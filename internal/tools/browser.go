@@ -471,6 +471,36 @@ func isPageContentEmpty(content string) bool {
 	return strings.TrimSpace(content) == ""
 }
 
+// antiBotTitlePatterns matches common anti-bot/CAPTCHA page titles.
+var antiBotTitlePatterns = []string{
+	"just a moment",
+	"verify you are human",
+	"are you a robot",
+	"robot check",
+	"access denied",
+	"attention required",
+	"security check",
+	"请验证",
+	"人机验证",
+	"安全验证",
+	"please wait while we verify",
+	"checking your browser",
+	"ddos protection",
+	"captcha",
+	"bot detection",
+}
+
+// detectAntiBotPage checks if a page title indicates an anti-bot/CAPTCHA challenge.
+func detectAntiBotPage(title string) bool {
+	lower := strings.ToLower(title)
+	for _, pattern := range antiBotTitlePatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *BrowserTool) readPage(_ context.Context, args browserArgs, timeout time.Duration) (agent.ToolResult, error) {
 	if t.isPinchtab() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)

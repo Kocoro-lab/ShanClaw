@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +19,7 @@ import (
 const (
 	pinchtabDefaultAddr = "127.0.0.1:9867"
 	pinchtabStartupWait = 10 * time.Second
+	minPinchtabVersion  = "0.8.0"
 )
 
 // pinchtabClient is an HTTP client for the pinchtab browser automation server.
@@ -27,6 +29,8 @@ type pinchtabClient struct {
 	http    *http.Client
 	cmd     *exec.Cmd // nil if user started pinchtab externally
 	started bool
+	// versionChecked ensures we log the warning at most once per client instance.
+	versionChecked bool
 }
 
 func newPinchtabClient() *pinchtabClient {
@@ -54,12 +58,18 @@ func resolvePinchtabBaseURL() string {
 	return "http://" + pinchtabDefaultAddr
 }
 
+type ptHealthResp struct {
+	Version string `json:"version"`
+	Status  string `json:"status"`
+}
+
 // ensure checks if pinchtab is running, and starts it if the binary is available.
 func (c *pinchtabClient) ensure(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.healthy(ctx) {
+	if health, ok := c.health(ctx); ok {
+		c.warnOnPinchtabVersion(health.Version)
 		return nil
 	}
 
@@ -97,30 +107,90 @@ func (c *pinchtabClient) ensure(ctx context.Context) error {
 			// Use a short-lived context for health check so a cancelled parent doesn't
 			// prevent us from detecting a healthy server on the deadline path.
 			hctx, hcancel := context.WithTimeout(context.Background(), 2*time.Second)
-			ok := c.healthy(hctx)
+			health, ok := c.health(hctx)
 			hcancel()
 			if ok {
 				c.started = true
+				c.warnOnPinchtabVersion(health.Version)
 				return nil
 			}
 		}
 	}
 }
 
-func (c *pinchtabClient) healthy(ctx context.Context) bool {
+func (c *pinchtabClient) health(ctx context.Context) (*ptHealthResp, bool) {
 	req, _ := http.NewRequestWithContext(ctx, "GET", c.base+"/health", nil)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return false
+		return nil, false
 	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+
+	var payload ptHealthResp
+	if len(body) == 0 {
+		return &payload, true
+	}
+
+	if err := json.Unmarshal(body, &payload); err != nil {
+		// Preserve startup behavior for non-JSON /health responses by treating the
+		// endpoint as healthy but without a version annotation.
+		return &ptHealthResp{}, true
+	}
+	return &payload, true
+}
+
+func (c *pinchtabClient) warnOnPinchtabVersion(version string) {
+	if c.versionChecked {
+		return
+	}
+	c.versionChecked = true
+
+	cleanVersion := normalizePinchtabVersion(version)
+	if cleanVersion == "" {
+		return
+	}
+
+	if compareVersions(cleanVersion, minPinchtabVersion) < 0 {
+		log.Printf("WARNING: pinchtab %s detected, recommend upgrading to %s+ for best results", version, minPinchtabVersion)
+	}
+}
+
+func normalizePinchtabVersion(version string) string {
+	ver := strings.TrimSpace(version)
+	if strings.HasPrefix(ver, "v") {
+		ver = strings.TrimPrefix(ver, "v")
+	}
+	if ver == "" {
+		return ""
+	}
+
+	parts := strings.Split(ver, ".")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		digits := ""
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				break
+			}
+			digits += string(ch)
+		}
+		if digits == "" {
+			break
+		}
+		out = append(out, digits)
+	}
+	return strings.Join(out, ".")
 }
 
 func (c *pinchtabClient) available(ctx context.Context) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.healthy(ctx)
+	_, ok := c.health(ctx)
+	return ok
 }
 
 // close shuts down the pinchtab process if we started it.

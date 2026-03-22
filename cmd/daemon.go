@@ -488,18 +488,21 @@ type daemonEventHandler struct {
 	autoApprove bool
 	shannonDir  string
 	deps        *daemon.ServerDeps
+	sessionID   string // set by RunAgent after session resolution (EventBus spans sessions)
 }
+
+func (h *daemonEventHandler) SetSessionID(id string) { h.sessionID = id }
 
 func (h *daemonEventHandler) OnToolCall(name string, args string) {
 	if h.deps.EventBus != nil {
-		payload, _ := json.Marshal(map[string]interface{}{"tool": name, "status": "running"})
+		payload, _ := json.Marshal(map[string]interface{}{"tool": name, "status": "running", "session_id": h.sessionID})
 		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventToolStatus, Payload: payload})
 	}
 }
 func (h *daemonEventHandler) OnToolResult(name string, args string, result agent.ToolResult, elapsed time.Duration) {
 	log.Printf("daemon: tool %s completed (%.1fs)", name, elapsed.Seconds())
 	if h.deps.EventBus != nil {
-		payload, _ := json.Marshal(map[string]interface{}{"tool": name, "status": "completed", "elapsed": elapsed.Seconds()})
+		payload, _ := json.Marshal(map[string]interface{}{"tool": name, "status": "completed", "elapsed": elapsed.Seconds(), "session_id": h.sessionID})
 		h.deps.EventBus.Emit(daemon.Event{Type: daemon.EventToolStatus, Payload: payload})
 	}
 }

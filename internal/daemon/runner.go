@@ -291,6 +291,11 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	}
 	sess := sessMgr.Current()
 
+	// Notify handler of resolved session ID so it can include it in EventBus payloads.
+	if setter, ok := handler.(interface{ SetSessionID(string) }); ok {
+		setter.SetSessionID(sess.ID)
+	}
+
 	// Persist session to disk before loop.Run() so there's a record even if
 	// the daemon crashes mid-execution. The final save after completion is
 	// still needed to capture the assistant's reply.

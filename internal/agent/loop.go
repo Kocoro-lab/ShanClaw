@@ -40,7 +40,7 @@ const baseSystemPrompt = `You are Shannon, an AI assistant running in a CLI term
 
 ## Core Rules
 - Always use tools to perform actions. Never claim you did something without a tool call.
-- Be concise. Summarize tool results — do not echo raw output.
+- Be concise. Summarize tool results — do not echo raw output. Exception: cloud_delegate results are already user-facing deliverables — present them in full.
 - Never apologize for, comment on, or explain your own tool calls. Just answer the user's question with the information you have.
 - Format text responses using GitHub-flavored markdown (GFM): use headers, fenced code blocks with language tags, lists, bold/italic, and tables where appropriate.
 - Read before modifying: always use file_read before file_edit or file_write on existing files. Never propose changes to code you haven't read.
@@ -156,7 +156,7 @@ PREFER LOCAL (delegate only if struggling):
 - Single web search -> local http tool first
 - Simple Q&A with one source -> local first
 
-CRITICAL: Call cloud_delegate ONCE per task. When it returns a result, summarize it and STOP. Never re-call cloud_delegate with the same or similar task — the cloud already ran multiple agents and returned the best result. Treat its output as final.
+CRITICAL: Call cloud_delegate ONCE per task. When it returns a result, present the full result to the user — do not summarize or truncate it. The cloud already ran multiple agents and produced a polished deliverable. Never re-call cloud_delegate with the same or similar task.
 
 INDEPENDENT REVIEW: When you need to review code, analysis, or content you just produced in this session, consider delegating to cloud_delegate with workflow_type "review". The cloud agent has no prior context from this session, making it better at catching issues you might overlook due to reasoning inertia. Good candidates: code review of files you just wrote, fact-checking analysis you just produced, second opinion on a design decision.`
 
@@ -599,16 +599,6 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			ReasoningEffort: a.reasoningEffort,
 		}
 
-		// First-turn forced tool use: on the very first iteration, force the model
-		// to call at least one tool (including "think") before emitting text.
-		// This prevents the model from answering action requests purely from
-		// training knowledge without grounding in tool results.
-		// Incompatible with extended thinking, so temporarily clear it for this call.
-		firstTurnForced := i == 0 && len(toolSchemas) > 0
-		if firstTurnForced {
-			req.ToolChoice = map[string]string{"type": "any"}
-			req.Thinking = nil
-		}
 		if a.enableStreaming && a.handler != nil {
 			resp, err = a.client.CompleteStream(ctx, req, func(delta client.StreamDelta) {
 				a.handler.OnStreamDelta(delta.Text)
@@ -619,22 +609,6 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 			}
 		} else {
 			resp, err = a.client.Complete(ctx, req)
-		}
-		// If first-turn tool_choice caused the error, retry without it.
-		// The gateway may not support tool_choice — fall back gracefully.
-		if err != nil && firstTurnForced {
-			req.ToolChoice = nil
-			req.Thinking = a.thinking
-			if a.enableStreaming && a.handler != nil {
-				resp, err = a.client.CompleteStream(ctx, req, func(delta client.StreamDelta) {
-					a.handler.OnStreamDelta(delta.Text)
-				})
-				if err != nil {
-					resp, err = a.client.Complete(ctx, req)
-				}
-			} else {
-				resp, err = a.client.Complete(ctx, req)
-			}
 		}
 		if err != nil {
 			return "", usage, fmt.Errorf("LLM call failed: %w", err)
@@ -656,30 +630,12 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 		}
 
 		// Handle text-only responses (no tool calls).
-		// Text-only always means "done" — the model uses the think tool
-		// to signal planning/continuation, so we never need to guess.
-		// Exception 0: first-turn forced tool use failed (gateway may not support
-		//   tool_choice), retry once with a nudge and thinking restored.
-		// Exception 1: after a checkpoint injection, allow one continuation.
-		// Exception 2: hallucination detection — if the model claims results without
-		// tool calls and we've had tool calls before, nudge it to verify.
+		// Text-only means "done" unless truncated, after a checkpoint, or
+		// hallucination is detected (Layer 3).
+		// Tool use is governed by tool_choice:auto + system prompt rules.
 		if !resp.HasToolCalls() {
 			if resp.OutputText != "" {
 				lastText = resp.OutputText
-			}
-
-			// First-turn fallback: if tool_choice was set but model still didn't
-			// call any tools, retry once with an explicit instruction.
-			if i == 0 && totalToolCalls == 0 && len(toolSchemas) > 0 {
-				messages = append(messages, client.Message{
-					Role:    "assistant",
-					Content: client.NewTextContent(resp.OutputText),
-				})
-				messages = append(messages, client.Message{
-					Role:    "user",
-					Content: client.NewTextContent("You responded without using any tools. Re-read the user's request — if they asked you to perform an action (browse, search, open, read, write, run, etc.), you MUST use the appropriate tool. Do not answer from memory."),
-				})
-				continue
 			}
 
 			// If response was truncated by max_tokens, accumulate the partial text
@@ -1483,6 +1439,7 @@ var toolResultPattern = regexp.MustCompile(`(?s)<tool_exec tool="(\w+)" call_id=
 
 // legacyToolResultPattern matches old "I called" format for backward-compat compression.
 var legacyToolResultPattern = regexp.MustCompile(`(?s)I called (\w+)\(([^)]*)\)\.\s*\n\n(?:Result|Error):\s*\n(.+?)(?:\n\nI called |\z)`)
+
 
 // compressOldToolResults replaces verbose tool results in old messages
 // with short summaries. Handles both XML-text format (assistant role) and

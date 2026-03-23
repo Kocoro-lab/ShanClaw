@@ -3,7 +3,9 @@ package tools
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Kocoro-lab/ShanClaw/internal/agent"
@@ -104,8 +106,6 @@ var gatewayAllowedTools = map[string]bool{
 	"ga4_get_metadata":        true,
 	// Visual
 	"page_screenshot": true,
-	// Browser
-	"browser": true,
 }
 
 // RegisterServerTools fetches server-side tools from the gateway and appends
@@ -170,12 +170,26 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 	var mcpMgr *mcp.ClientManager
 	if len(mcpServers) > 0 {
 		mcpMgr = mcp.NewClientManager()
-		mcpTools, _ := mcpMgr.ConnectAll(context.Background(), mcpServers)
+		mcpTools, mcpErr := mcpMgr.ConnectAll(ctx, mcpServers)
+		if mcpErr != nil {
+			log.Printf("MCP connection warning: %v", mcpErr)
+		}
+		hasPlaywright := false
 		for _, t := range mcpTools {
 			if _, exists := reg.Get(t.Tool.Name); exists {
 				continue
 			}
 			reg.Register(NewMCPTool(t.ServerName, t.Tool, mcpMgr))
+			if t.Tool.Name == "browser_navigate" {
+				hasPlaywright = true
+			}
+		}
+		// Disable legacy browser tool when Playwright MCP is available
+		if hasPlaywright {
+			reg.Remove("browser")
+			log.Printf("Playwright MCP connected — disabled legacy browser tool")
+			// Close the Bridge extension's connect.html tab (safe after connection is established)
+			go closePlaywrightExtensionTab(mcpMgr)
 		}
 	}
 
@@ -200,7 +214,7 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 func RegisterAll(gw *client.GatewayClient, cfg *config.Config, agentDef ...*agents.Agent) (*agent.ToolRegistry, *[]*skills.Skill, func(), error) {
 	reg, skillsPtr, baseCleanup := RegisterLocalTools(cfg)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	reg, remoteCleanup, err := CompleteRegistration(ctx, gw, cfg, reg, agentDef...)
@@ -251,6 +265,57 @@ func resolveMCPServers(cfg *config.Config, agentDef ...*agents.Agent) map[string
 	}
 
 	return result
+}
+
+// closePlaywrightExtensionTab closes the Playwright MCP Bridge's connect.html
+// tab after the CDP connection is fully established. The relay connection
+// survives tab closure once connectToTab has completed in the background
+// service worker.
+func closePlaywrightExtensionTab(mcpMgr *mcp.ClientManager) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Small delay to ensure connectToTab has completed in the extension
+	time.Sleep(2 * time.Second)
+
+	// List tabs to find the extension connect page
+	content, _, err := mcpMgr.CallTool(ctx, "playwright", "browser_tabs", map[string]any{"action": "list"})
+	if err != nil {
+		log.Printf("Playwright: failed to list tabs for cleanup: %v", err)
+		return
+	}
+
+	// Look for the connect.html tab by checking for the extension URL pattern
+	// The tab list returns markdown with tab indices and URLs
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "connect.html") || strings.Contains(line, "chrome-extension://") {
+			// Extract tab index — format is typically "- [N] title (url)"
+			for i, ch := range line {
+				if ch >= '0' && ch <= '9' {
+					end := i
+					for end < len(line) && line[end] >= '0' && line[end] <= '9' {
+						end++
+					}
+					idx := line[i:end]
+					idxNum := 0
+					for _, c := range idx {
+						idxNum = idxNum*10 + int(c-'0')
+					}
+					_, _, closeErr := mcpMgr.CallTool(ctx, "playwright", "browser_tabs", map[string]any{
+						"action": "close",
+						"index":  idxNum,
+					})
+					if closeErr != nil {
+						log.Printf("Playwright: failed to close extension tab: %v", closeErr)
+					} else {
+						log.Printf("Playwright: closed Bridge extension connect tab (index %d)", idxNum)
+					}
+					return
+				}
+			}
+		}
+	}
 }
 
 // ResolveMCPContext builds the MCP context string scoped to the agent's servers.

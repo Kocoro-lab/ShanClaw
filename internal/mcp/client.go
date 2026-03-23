@@ -64,7 +64,7 @@ func (m *ClientManager) ConnectAll(ctx context.Context, servers map[string]MCPSe
 		wg.Add(1)
 		go func(name string, cfg MCPServerConfig) {
 			defer wg.Done()
-			serverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			serverCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 			defer cancel()
 			tools, err := m.connect(serverCtx, name, cfg)
 			results <- result{tools: tools, err: err, name: name}

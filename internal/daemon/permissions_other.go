@@ -5,7 +5,7 @@ package daemon
 import "context"
 
 func probePermissions(_ context.Context) permissionStatus {
-	return permissionStatus{ScreenRecording: "unsupported", Accessibility: "unsupported"}
+	return permissionStatus{ScreenRecording: "unsupported", Accessibility: "unsupported", Automation: "unsupported"}
 }
 
 func requestPermission(_ context.Context, _ string) permissionResult {

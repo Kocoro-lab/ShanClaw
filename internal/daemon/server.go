@@ -565,14 +565,14 @@ func (s *Server) handlePermissions(w http.ResponseWriter, r *http.Request) {
 // handlePermissionsRequest triggers macOS permission dialogs for the requested permission.
 func (s *Server) handlePermissionsRequest(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Permission string `json:"permission"` // "screen_recording" or "accessibility"
+		Permission string `json:"permission"` // "screen_recording", "accessibility", or "automation"
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
 		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 	switch req.Permission {
-	case "screen_recording", "accessibility":
+	case "screen_recording", "accessibility", "automation":
 		// valid
 	default:
 		w.Header().Set("Content-Type", "application/json")

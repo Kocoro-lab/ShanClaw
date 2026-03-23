@@ -1,6 +1,35 @@
 import Foundation
 import ApplicationServices
+import CoreGraphics
 import AppKit
+
+// MARK: - CLI Permission Modes
+
+let args = CommandLine.arguments
+
+if args.contains("--check-permissions") {
+    // One-shot: output permission status JSON and exit.
+    // Does NOT require accessibility to be granted — that's what we're checking.
+    let status = checkAllPermissions()
+    if let data = try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys]),
+       let str = String(data: data, encoding: .utf8) {
+        print(str)
+    }
+    exit(0)
+}
+
+if let idx = args.firstIndex(of: "--request-permission"), idx + 1 < args.count {
+    // One-shot: trigger permission dialog and exit.
+    let permission = args[idx + 1]
+    let result = requestPermissionCLI(permission)
+    if let data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]),
+       let str = String(data: data, encoding: .utf8) {
+        print(str)
+    }
+    exit(0)
+}
+
+// MARK: - Normal Stdin Loop Mode
 
 // Check accessibility permission once at startup.
 guard AXIsProcessTrusted() else {
@@ -218,5 +247,121 @@ func writeResponse(_ resp: Response) {
        var str = String(data: data, encoding: .utf8) {
         str += "\n"
         FileHandle.standardOutput.write(str.data(using: .utf8)!)
+    }
+}
+
+// MARK: - Permission Checks (CLI Mode)
+
+func checkAllPermissions() -> [String: String] {
+    return [
+        "accessibility": AXIsProcessTrusted() ? "granted" : "denied",
+        "screen_recording": checkScreenRecording(),
+        "automation": checkAutomation(),
+    ]
+}
+
+func checkScreenRecording() -> String {
+    // CGPreflightScreenCaptureAccess() returns true if granted, false otherwise.
+    // Available macOS 10.15+. Does NOT trigger a prompt.
+    if CGPreflightScreenCaptureAccess() {
+        return "granted"
+    }
+    return "denied"
+}
+
+func checkAutomation() -> String {
+    // Use AEDeterminePermissionToAutomateTarget to check Automation permission
+    // WITHOUT triggering a consent dialog. Available macOS 10.14+.
+    // We check permission to send events to System Events (com.apple.systemevents).
+
+    // Ensure System Events is running — AEDeterminePermissionToAutomateTarget
+    // returns procNotFound (-600) if the target app isn't running.
+    // System Events is a background-only daemon, safe to launch.
+    ensureSystemEventsRunning()
+
+    let addressDesc = NSAppleEventDescriptor(bundleIdentifier: "com.apple.systemevents")
+    let status = AEDeterminePermissionToAutomateTarget(
+        addressDesc.aeDesc,     // target
+        typeWildCard,           // theAEEventClass
+        typeWildCard,           // theAEEventID
+        false                   // askUserIfNeeded: false = passive check, no prompt
+    )
+
+    switch status {
+    case noErr:
+        return "granted"
+    case OSStatus(errAEEventNotPermitted):
+        return "denied"
+    case OSStatus(-1744): // errAEEventWouldRequireUserConsent
+        return "denied"
+    case OSStatus(procNotFound):
+        // System Events still not running after launch attempt
+        return "unknown"
+    default:
+        return "unknown"
+    }
+}
+
+func ensureSystemEventsRunning() {
+    let running = NSWorkspace.shared.runningApplications.contains {
+        $0.bundleIdentifier == "com.apple.systemevents"
+    }
+    if running { return }
+
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.systemevents") else {
+        return
+    }
+    let config = NSWorkspace.OpenConfiguration()
+    config.activates = false
+    let sem = DispatchSemaphore(value: 0)
+    NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+        sem.signal()
+    }
+    _ = sem.wait(timeout: .now() + 2.0)
+}
+
+func requestPermissionCLI(_ permission: String) -> [String: String] {
+    switch permission {
+    case "accessibility":
+        // AXIsProcessTrustedWithOptions with prompt: true opens System Settings
+        // to the Accessibility pane and highlights this app.
+        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        let granted = AXIsProcessTrustedWithOptions(opts)
+        return [
+            "permission": "accessibility",
+            "status": granted ? "granted" : "prompted",
+            "message": granted ? "" : "Permission dialog shown. Enable in: System Settings > Privacy & Security > Accessibility",
+        ]
+
+    case "screen_recording":
+        // CGRequestScreenCaptureAccess() triggers the system dialog on first call.
+        // Returns true if already granted.
+        let granted = CGRequestScreenCaptureAccess()
+        return [
+            "permission": "screen_recording",
+            "status": granted ? "granted" : "prompted",
+            "message": granted ? "" : "Permission dialog shown. Enable in: System Settings > Privacy & Security > Screen Recording",
+        ]
+
+    case "automation":
+        // Trigger the "wants to control" dialog by attempting an Apple Event.
+        let script = NSAppleScript(source: """
+            tell application "System Events" to get name of first process whose frontmost is true
+        """)
+        var errorInfo: NSDictionary?
+        script?.executeAndReturnError(&errorInfo)
+        let granted = errorInfo == nil
+        return [
+            "permission": "automation",
+            "status": granted ? "granted" : "prompted",
+            "message": granted ? "" : "Permission dialog shown. Enable in: System Settings > Privacy & Security > Automation",
+        ]
+
+    default:
+        return [
+            "permission": permission,
+            "status": "unknown",
+            "message": "Unsupported permission: \(permission)",
+        ]
     }
 }

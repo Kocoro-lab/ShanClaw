@@ -2,92 +2,122 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 )
 
-// probePermissions checks current TCC permission status without triggering dialogs.
+// probePermissions checks current TCC permission status via ax_server.
 func probePermissions(ctx context.Context) permissionStatus {
+	path, err := axServerPath()
+	if err != nil {
+		return permissionStatus{
+			ScreenRecording: "unknown",
+			Accessibility:   "unknown",
+			Automation:      "unknown",
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, path, "--check-permissions")
+	out, err := cmd.Output()
+	if err != nil {
+		return permissionStatus{
+			ScreenRecording: "unknown",
+			Accessibility:   "unknown",
+			Automation:      "unknown",
+		}
+	}
+
+	var status map[string]string
+	if err := json.Unmarshal(out, &status); err != nil {
+		return permissionStatus{
+			ScreenRecording: "unknown",
+			Accessibility:   "unknown",
+			Automation:      "unknown",
+		}
+	}
+
 	return permissionStatus{
-		ScreenRecording: probeScreenRecording(ctx),
-		Accessibility:   probeAccessibility(ctx),
+		ScreenRecording: statusOrUnknown(status, "screen_recording"),
+		Accessibility:   statusOrUnknown(status, "accessibility"),
+		Automation:      statusOrUnknown(status, "automation"),
 	}
 }
 
-// requestPermission triggers the macOS permission dialog for the given permission.
+// requestPermission triggers macOS permission dialogs via ax_server.
 func requestPermission(ctx context.Context, permission string) permissionResult {
 	switch permission {
-	case "screen_recording":
-		return requestScreenRecording(ctx)
-	case "accessibility":
-		return requestAccessibility(ctx)
+	case "screen_recording", "accessibility", "automation":
+		// valid
 	default:
 		return permissionResult{Permission: permission, Status: "unknown", Message: "unsupported permission"}
 	}
-}
 
-// probeScreenRecording checks if screen recording is granted by running
-// a silent screencapture and checking if the output is a valid image.
-func probeScreenRecording(ctx context.Context) string {
-	tmpFile := filepath.Join(os.TempDir(), ".shan-screen-probe.png")
-	defer os.Remove(tmpFile)
-
-	cmd := exec.CommandContext(ctx, "screencapture", "-x", "-C", tmpFile)
-	if err := cmd.Run(); err != nil {
-		return "denied"
+	path, err := axServerPath()
+	if err != nil {
+		return permissionResult{
+			Permission: permission,
+			Status:     "unknown",
+			Message:    fmt.Sprintf("ax_server not found: %v", err),
+		}
 	}
 
-	info, err := os.Stat(tmpFile)
-	if err != nil || info.Size() < 100 {
-		// screencapture succeeds but produces a tiny/blank file when denied
-		return "denied"
+	cmd := exec.CommandContext(ctx, path, "--request-permission", permission)
+	out, err := cmd.Output()
+	if err != nil {
+		return permissionResult{
+			Permission: permission,
+			Status:     "unknown",
+			Message:    fmt.Sprintf("ax_server request failed: %v", err),
+		}
 	}
-	return "granted"
-}
 
-// probeAccessibility checks if accessibility is granted by attempting to
-// read the frontmost app name via AppleScript + System Events.
-func probeAccessibility(ctx context.Context) string {
-	cmd := exec.CommandContext(ctx, "osascript", "-e",
-		`tell application "System Events" to get name of first process whose frontmost is true`)
-	if err := cmd.Run(); err != nil {
-		return "denied"
+	var result map[string]string
+	if err := json.Unmarshal(out, &result); err != nil {
+		return permissionResult{
+			Permission: permission,
+			Status:     "unknown",
+			Message:    "failed to parse ax_server response",
+		}
 	}
-	return "granted"
-}
 
-// requestScreenRecording triggers the screen recording permission dialog
-// by attempting a screen capture. On first run, macOS shows the dialog.
-func requestScreenRecording(ctx context.Context) permissionResult {
-	tmpFile := filepath.Join(os.TempDir(), ".shan-screen-probe.png")
-	defer os.Remove(tmpFile)
-
-	cmd := exec.CommandContext(ctx, "screencapture", "-x", "-C", tmpFile)
-	cmd.Run()
-
-	info, err := os.Stat(tmpFile)
-	if err == nil && info.Size() >= 100 {
-		return permissionResult{Permission: "screen_recording", Status: "granted"}
-	}
 	return permissionResult{
-		Permission: "screen_recording",
-		Status:     "prompted",
-		Message:    "Permission dialog shown. Enable in: System Settings > Privacy & Security > Screen Recording",
+		Permission: result["permission"],
+		Status:     result["status"],
+		Message:    result["message"],
 	}
 }
 
-// requestAccessibility triggers the accessibility permission dialog
-// by attempting to use System Events via AppleScript.
-func requestAccessibility(ctx context.Context) permissionResult {
-	cmd := exec.CommandContext(ctx, "osascript", "-e",
-		`tell application "System Events" to get name of first process whose frontmost is true`)
-	if err := cmd.Run(); err == nil {
-		return permissionResult{Permission: "accessibility", Status: "granted"}
+func statusOrUnknown(m map[string]string, key string) string {
+	if v, ok := m[key]; ok && v != "" {
+		return v
 	}
-	return permissionResult{
-		Permission: "accessibility",
-		Status:     "prompted",
-		Message:    "Permission dialog shown. Enable in: System Settings > Privacy & Security > Accessibility",
+	return "unknown"
+}
+
+// axServerPath finds the ax_server binary.
+// Mirrors the lookup in internal/tools/axclient.go.
+func axServerPath() (string, error) {
+	exe, err := os.Executable()
+	if err == nil {
+		dir := filepath.Dir(exe)
+		// Same directory as shan binary
+		p := filepath.Join(dir, "ax_server")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+		// npm: bin/ax_server
+		p = filepath.Join(dir, "bin", "ax_server")
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
 	}
+	// Development: relative to working directory
+	p := filepath.Join("internal", "tools", "axserver", ".build", "debug", "ax_server")
+	if _, err := os.Stat(p); err == nil {
+		return p, nil
+	}
+	return "", fmt.Errorf("ax_server binary not found")
 }

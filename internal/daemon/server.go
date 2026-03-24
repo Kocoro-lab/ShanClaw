@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1894,6 +1896,29 @@ func (s *Server) handleConfigStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// mcpConfigChanged returns true if MCP server configuration differs between old and new config.
+func mcpConfigChanged(oldCfg, newCfg *config.Config) bool {
+	if oldCfg == nil {
+		return len(newCfg.MCPServers) > 0
+	}
+	if len(oldCfg.MCPServers) != len(newCfg.MCPServers) {
+		return true
+	}
+	for name, oldSrv := range oldCfg.MCPServers {
+		newSrv, ok := newCfg.MCPServers[name]
+		if !ok {
+			return true
+		}
+		if oldSrv.Command != newSrv.Command || oldSrv.Type != newSrv.Type ||
+			oldSrv.URL != newSrv.URL || oldSrv.Disabled != newSrv.Disabled ||
+			oldSrv.Context != newSrv.Context || !slices.Equal(oldSrv.Args, newSrv.Args) ||
+			!maps.Equal(oldSrv.Env, newSrv.Env) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 	oldCfg, _ := s.deps.Snapshot()
 
@@ -1903,21 +1928,36 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	newReg, _, newCleanup, regErr := tools.RegisterAll(s.deps.GW, newCfg)
-	if regErr != nil {
-		log.Printf("daemon: reload warning: %v", regErr)
-	}
-	tools.RegisterCloudDelegate(newReg, s.deps.GW, newCfg, nil, "", "")
+	// Only re-register MCP servers if MCP config actually changed.
+	// RegisterAll tears down and restarts all MCP processes (including
+	// playwright-mcp which opens Chrome), so skip it when unnecessary.
+	mcpChanged := mcpConfigChanged(oldCfg, newCfg)
 
-	s.deps.mu.Lock()
-	oldCleanup := s.deps.Cleanup
-	s.deps.Config = newCfg
-	s.deps.Registry = newReg
-	s.deps.Cleanup = newCleanup
-	s.deps.mu.Unlock()
+	var regErr error
+	if mcpChanged {
+		var newReg *agent.ToolRegistry
+		var newCleanup func()
+		newReg, _, newCleanup, regErr = tools.RegisterAll(s.deps.GW, newCfg)
+		if regErr != nil {
+			log.Printf("daemon: reload warning: %v", regErr)
+		}
+		tools.RegisterCloudDelegate(newReg, s.deps.GW, newCfg, nil, "", "")
 
-	if oldCleanup != nil {
-		oldCleanup()
+		s.deps.mu.Lock()
+		oldCleanup := s.deps.Cleanup
+		s.deps.Config = newCfg
+		s.deps.Registry = newReg
+		s.deps.Cleanup = newCleanup
+		s.deps.mu.Unlock()
+
+		if oldCleanup != nil {
+			oldCleanup()
+		}
+	} else {
+		// Config changed but MCP servers didn't — just update config.
+		s.deps.mu.Lock()
+		s.deps.Config = newCfg
+		s.deps.mu.Unlock()
 	}
 
 	if s.onReload != nil {

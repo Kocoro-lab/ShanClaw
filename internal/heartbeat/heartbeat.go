@@ -250,7 +250,9 @@ func (m *Manager) tickGoalDriven(ctx context.Context, ah *agentHeartbeat, goals 
 		return
 	}
 
-	appendErr := m.deps.SessionCache.AppendToSession(routeKey, sessionsDir, sessionID, collector.Messages)
+	// Prepend the heartbeat prompt as a user message so the full turn is persisted
+	turn := append([]client.Message{{Role: "user", Content: client.NewTextContent(prompt)}}, collector.Messages...)
+	appendErr := m.deps.SessionCache.AppendToSession(routeKey, sessionsDir, sessionID, turn)
 	if appendErr != nil {
 		if errors.Is(appendErr, daemon.ErrSessionChanged) {
 			log.Printf("heartbeat: %q session_changed (session=%s, duration=%dms)", ah.name, sessionID, elapsed)

@@ -405,8 +405,15 @@ func (sc *SessionCache) CloseAll() {
 func (sc *SessionCache) ResolveLatestSession(routeKey string, sessionsDir string) (string, []client.Message, error) {
 	sc.mu.Lock()
 	entry, ok := sc.routes[routeKey]
+	if !ok {
+		entry = &routeEntry{lastAccess: time.Now()}
+		sc.routes[routeKey] = entry
+	}
+	if entry.manager == nil && sessionsDir != "" {
+		entry.manager = sc.newManager(sessionsDir)
+	}
 	sc.mu.Unlock()
-	if !ok || entry.manager == nil {
+	if entry.manager == nil {
 		return "", nil, fmt.Errorf("no route entry for %q", routeKey)
 	}
 

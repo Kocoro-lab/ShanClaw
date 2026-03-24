@@ -38,7 +38,8 @@ type RunAgentRequest struct {
 	ThreadID   string `json:"thread_id,omitempty"` // thread context for messaging platforms
 	RouteKey      string `json:"-"`                   // internal routing key
 	Ephemeral     bool   `json:"-"`                   // caller owns persistence + events
-	ModelOverride string `json:"-"`                   // overrides agent model tier
+	ModelOverride  string `json:"-"`                   // overrides agent model tier
+	BypassRouting  bool   `json:"-"`                   // skip route lock (heartbeat runs)
 }
 
 // Validate checks that the request has the minimum required fields.
@@ -56,6 +57,9 @@ func (r *RunAgentRequest) Validate() error {
 
 // ComputeRouteKey builds the route key for session cache/locking decisions.
 func ComputeRouteKey(req RunAgentRequest) string {
+	if req.BypassRouting {
+		return ""
+	}
 	if req.Agent != "" {
 		return "agent:" + req.Agent
 	}

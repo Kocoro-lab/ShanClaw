@@ -62,6 +62,20 @@ func TestRunAgentRequest_ModelOverride(t *testing.T) {
 	}
 }
 
+func TestComputeRouteKey_BypassRouting(t *testing.T) {
+	req := RunAgentRequest{Agent: "my-agent", BypassRouting: true}
+	if got := ComputeRouteKey(req); got != "" {
+		t.Errorf("ComputeRouteKey with BypassRouting=true returned %q, want empty", got)
+	}
+}
+
+func TestComputeRouteKey_AgentWithoutBypass(t *testing.T) {
+	req := RunAgentRequest{Agent: "my-agent"}
+	if got := ComputeRouteKey(req); got != "agent:my-agent" {
+		t.Errorf("ComputeRouteKey returned %q, want %q", got, "agent:my-agent")
+	}
+}
+
 func TestRunAgentRequestSource(t *testing.T) {
 	req := RunAgentRequest{
 		Text:   "hello",

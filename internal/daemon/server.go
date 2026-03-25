@@ -1999,13 +1999,11 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 			if depsSup != newSupervisor {
 				return
 			}
-			rebuilt := tools.RebuildRegistryForHealth(
-				newBaseline, newGatewayOverlay, newPostOverlays,
-				newSupervisor.HealthStates(), newMCPMgr,
-			)
-			s.deps.mu.Lock()
+			bl, gwOv, po, mgr := s.deps.RebuildLayers()
+			rebuilt := tools.RebuildRegistryForHealth(bl, gwOv, po, newSupervisor.HealthStates(), mgr)
+			s.deps.WriteLock()
 			s.deps.Registry = rebuilt
-			s.deps.mu.Unlock()
+			s.deps.WriteUnlock()
 			log.Printf("MCP registry rebuilt (reload): %d tools", len(rebuilt.All()))
 		})
 
@@ -2017,6 +2015,9 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		s.deps.MCPManager = newMCPMgr
 		s.deps.Supervisor = newSupervisor
 		s.deps.Cleanup = newCleanup
+		s.deps.BaselineReg = newBaseline
+		s.deps.GatewayOverlay = newGatewayOverlay
+		s.deps.PostOverlays = newPostOverlays
 		s.deps.mu.Unlock()
 
 		if oldSupervisor != nil {
@@ -2031,11 +2032,22 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		// Config changed but MCP servers didn't — update config and refresh
 		// cached rebuild layers so health-driven rebuilds use current settings.
 		newBaseline, _, newBaseCleanup := tools.RegisterLocalTools(newCfg)
-		// Re-register gateway tools on top of fresh baseline clone
+		// Re-register gateway tools on top of fresh baseline clone.
+		// Use a short timeout — if the gateway is unavailable, keep existing overlay.
 		freshReg := newBaseline.Clone()
-		_ = tools.RegisterServerTools(context.Background(), s.deps.GW, freshReg)
+		gwCtx, gwCancel := context.WithTimeout(r.Context(), 5*time.Second)
+		gwErr := tools.RegisterServerTools(gwCtx, s.deps.GW, freshReg)
+		gwCancel()
 		tools.RegisterCloudDelegate(freshReg, s.deps.GW, newCfg, nil, "", "")
-		newGatewayOverlay := tools.ExtractGatewayTools(freshReg)
+		var newGatewayOverlay []agent.Tool
+		if gwErr != nil {
+			log.Printf("daemon: reload: gateway refresh failed, keeping existing overlay: %v", gwErr)
+			s.deps.mu.RLock()
+			newGatewayOverlay = s.deps.GatewayOverlay
+			s.deps.mu.RUnlock()
+		} else {
+			newGatewayOverlay = tools.ExtractGatewayTools(freshReg)
+		}
 		newPostOverlays := tools.ExtractPostOverlays(freshReg, newBaseline)
 
 		s.deps.mu.Lock()

@@ -33,18 +33,21 @@ type RemoteTool struct {
 
 // ClientManager manages connections to multiple MCP servers.
 type ClientManager struct {
-	mu        sync.Mutex
-	clients   map[string]mcpclient.MCPClient // server name → client
-	configs   map[string]MCPServerConfig     // server name → config (for reconnect)
-	toolCache map[string][]RemoteTool        // server name → last-known tools
+	mu          sync.Mutex
+	clients     map[string]mcpclient.MCPClient // server name → client
+	configs     map[string]MCPServerConfig     // server name → config (for reconnect)
+	toolCache   map[string][]RemoteTool        // server name → last-known tools
+	reconnectMu map[string]*sync.Mutex         // per-server reconnect serialization
+	supervised  bool                           // when true, skip inline reconnect in CallTool
 }
 
 // NewClientManager creates a new MCP client manager.
 func NewClientManager() *ClientManager {
 	return &ClientManager{
-		clients:   make(map[string]mcpclient.MCPClient),
-		configs:   make(map[string]MCPServerConfig),
-		toolCache: make(map[string][]RemoteTool),
+		clients:     make(map[string]mcpclient.MCPClient),
+		configs:     make(map[string]MCPServerConfig),
+		toolCache:   make(map[string][]RemoteTool),
+		reconnectMu: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -203,6 +206,12 @@ func (m *ClientManager) CallTool(ctx context.Context, serverName, toolName strin
 		},
 	})
 	if err != nil && isTransportError(err) {
+		m.mu.Lock()
+		skip := m.supervised
+		m.mu.Unlock()
+		if skip {
+			return "", true, fmt.Errorf("tools/call failed (supervised, no inline reconnect): %w", err)
+		}
 		// Transport failure (process died, broken pipe, EOF).
 		// Attempt a one-shot reconnect using a fresh background context so a
 		// cancelled request context doesn't prevent recovery.
@@ -281,6 +290,66 @@ func (m *ClientManager) Close() {
 		}(c)
 	}
 	wg.Wait()
+}
+
+func (m *ClientManager) SetSupervised(v bool) {
+	m.mu.Lock()
+	m.supervised = v
+	m.mu.Unlock()
+}
+
+func (m *ClientManager) CachedTools(serverName string) []RemoteTool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tools := m.toolCache[serverName]
+	if tools == nil {
+		return nil
+	}
+	cp := make([]RemoteTool, len(tools))
+	copy(cp, tools)
+	return cp
+}
+
+func (m *ClientManager) ProbeTransport(ctx context.Context, serverName string) error {
+	m.mu.Lock()
+	c, ok := m.clients[serverName]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("MCP server %q not connected", serverName)
+	}
+	_, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	if err != nil {
+		return fmt.Errorf("transport probe failed: %w", err)
+	}
+	return nil
+}
+
+func (m *ClientManager) Reconnect(ctx context.Context, serverName string) ([]RemoteTool, error) {
+	m.mu.Lock()
+	cfg, hasCfg := m.configs[serverName]
+	if !hasCfg {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("no config for MCP server %q", serverName)
+	}
+	rmu, ok := m.reconnectMu[serverName]
+	if !ok {
+		rmu = &sync.Mutex{}
+		m.reconnectMu[serverName] = rmu
+	}
+	stale := m.clients[serverName]
+	m.mu.Unlock()
+
+	rmu.Lock()
+	defer rmu.Unlock()
+
+	if stale != nil {
+		_ = stale.Close()
+	}
+	m.mu.Lock()
+	delete(m.clients, serverName)
+	m.mu.Unlock()
+
+	return m.connect(ctx, serverName, cfg)
 }
 
 // isTransportError reports whether err indicates a transport/connection failure

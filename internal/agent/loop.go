@@ -234,6 +234,7 @@ type AgentLoop struct {
 	injectCh         chan string   // receives user messages injected mid-run
 	injectedMessages []string     // messages injected during the last Run(); cleared on each Run() call
 	runMessages      []client.Message // conversation messages accumulated during the last Run() (excludes system+history)
+	runMsgInjected   []bool           // parallel to runMessages: true = system-injected guardrail/nudge
 }
 
 func NewAgentLoop(gw *client.GatewayClient, tools *ToolRegistry, modelTier string, shannonDir string, maxIter int, resultTrunc int, argsTrunc int, perms *permissions.PermissionsConfig, auditor *audit.AuditLogger, hookRunner *hooks.HookRunner) *AgentLoop {
@@ -348,6 +349,18 @@ func (a *AgentLoop) RunMessages() []client.Message {
 	return out
 }
 
+// RunMessageInjected returns a parallel bool slice indicating which RunMessages
+// entries are system-injected (guardrails, nudges, checkpoints) rather than
+// real user input. Callers can use this to set MessageMeta.SystemInjected.
+func (a *AgentLoop) RunMessageInjected() []bool {
+	if len(a.runMsgInjected) == 0 {
+		return nil
+	}
+	out := make([]bool, len(a.runMsgInjected))
+	copy(out, a.runMsgInjected)
+	return out
+}
+
 // SwitchAgent applies full per-agent scoping: prompt, memory directory, tool registry,
 // and MCP context. Pass a new ToolRegistry and MCP context string built from
 // the agent's scoped MCP servers. If reg is nil, the existing registry is kept.
@@ -395,6 +408,7 @@ type approvedToolCall struct {
 func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []client.Message) (string, *TurnUsage, error) {
 	a.injectedMessages = nil // reset for this run
 	a.runMessages = nil      // reset for this run
+	a.runMsgInjected = nil   // reset for this run
 
 	// Build system prompt using prompt builder with instructions/memory
 	var toolNames []string
@@ -460,12 +474,22 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 	// It is updated after context compaction (ShapeHistory reassigns messages to
 	// a shorter slice, invalidating the original offset).
 	newMsgOffset := len(messages) - 1
+	injectedIndices := make(map[int]bool) // message indices that are system-injected
 	captureRunMessages := func() {
 		if newMsgOffset >= 1 && newMsgOffset < len(messages) {
-			a.runMessages = make([]client.Message, len(messages)-newMsgOffset)
+			n := len(messages) - newMsgOffset
+			a.runMessages = make([]client.Message, n)
 			copy(a.runMessages, messages[newMsgOffset:])
+			a.runMsgInjected = make([]bool, n)
+			for i := 0; i < n; i++ {
+				a.runMsgInjected[i] = injectedIndices[newMsgOffset+i]
+			}
 		}
 	}
+
+	// markInjected tags the message at the current end of the messages slice
+	// as system-injected. Call immediately after appending a guardrail message.
+	markInjected := func() { injectedIndices[len(messages)-1] = true }
 
 	toolSchemas := a.tools.Schemas()
 	usage := &TurnUsage{}
@@ -580,6 +604,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					Role:    "user",
 					Content: client.NewTextContent("You've completed many iterations. Briefly state: (1) what you've accomplished, (2) what remains, (3) whether you should continue or wrap up. Then continue working."),
 				})
+				markInjected()
 				afterCheckpoint = true
 				checkpointDone = true
 			}
@@ -630,15 +655,26 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					before := len(messages)
 					messages = ctxwin.ShapeHistory(messages, compactionSummary, a.contextWindow)
 					if len(messages) < before {
+						dropped := before - len(messages)
 						fmt.Fprintf(os.Stderr, "[context] compacted: %d → %d messages\n", before, len(messages))
 						// Adjust newMsgOffset: compaction drops middle messages
 						// but keeps the recent tail. Shift by the number dropped.
 						// Clamp to 1 (skip system prompt at index 0) so that
 						// captureRunMessages never includes the system message.
-						newMsgOffset -= before - len(messages)
+						newMsgOffset -= dropped
 						if newMsgOffset < 1 {
 							newMsgOffset = 1
 						}
+						// Rebase injectedIndices: keys are absolute message indices
+						// that shifted downward after compaction.
+						rebased := make(map[int]bool, len(injectedIndices))
+						for idx := range injectedIndices {
+							newIdx := idx - dropped
+							if newIdx >= newMsgOffset {
+								rebased[newIdx] = true
+							}
+						}
+						injectedIndices = rebased
 					}
 					compactionApplied = true
 				}
@@ -685,9 +721,10 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				return "", usage, fmt.Errorf("LLM call failed: %w", err)
 			}
 			backoff := time.Duration(1<<attempt) * time.Second // 1s, 2s, 4s
+			reason := classifyLLMError(err)
 			fmt.Fprintf(os.Stderr, "[agent] LLM call failed (attempt %d/%d), retrying in %v: %v\n", attempt+1, maxLLMRetries, backoff, err)
 			if a.handler != nil {
-				a.handler.OnCloudAgent("", "retry", fmt.Sprintf("Retrying request (attempt %d/%d)…", attempt+1, maxLLMRetries))
+				a.handler.OnCloudAgent("", "retry", fmt.Sprintf("Retrying request (attempt %d/%d): %s", attempt+1, maxLLMRetries, reason))
 			}
 			select {
 			case <-time.After(backoff):
@@ -767,6 +804,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					Role:    "user",
 					Content: client.NewTextContent("STOP. You wrote out tool calls as text instead of actually calling them. Those are fabricated results — none of those actions happened. Use real tool calls to perform the actions."),
 				})
+				markInjected()
 				continue
 			}
 			if totalToolCalls > 0 && hallucinationNudges < 2 && looksLikeUnverifiedClaim(resp.OutputText) {
@@ -779,6 +817,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					Role:    "user",
 					Content: client.NewTextContent("You described a result without calling a tool to verify it in this response. Use the appropriate tool (screenshot, accessibility read_tree, file_read, bash, etc.) to confirm before proceeding."),
 				})
+				markInjected()
 				continue
 			}
 
@@ -792,6 +831,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					Role:    "user",
 					Content: client.NewTextContent("STOP. A tool was denied by the user this turn, but your response claims it completed. The denied tool did NOT run. Acknowledge the denial and ask how to proceed instead."),
 				})
+				markInjected()
 				continue
 			}
 
@@ -1192,6 +1232,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				Role:    "user",
 				Content: client.NewTextContent(worstMsg),
 			})
+			markInjected()
 			finalResp, err := a.completeWithRetry(ctx, client.CompletionRequest{
 				Messages:  messages,
 				ModelTier: a.modelTier,
@@ -1221,6 +1262,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					Role:    "user",
 					Content: client.NewTextContent(worstMsg),
 				})
+				markInjected()
 				finalResp, err := a.completeWithRetry(ctx, client.CompletionRequest{
 					Messages:  messages,
 					ModelTier: a.modelTier,
@@ -1244,6 +1286,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 				Role:    "user",
 				Content: client.NewTextContent(worstMsg),
 			})
+			markInjected()
 		}
 
 		// Accumulate cross-iteration result cache from this iteration's successful executions.
@@ -1277,6 +1320,7 @@ func (a *AgentLoop) Run(ctx context.Context, userMessage string, history []clien
 					Role:    "user",
 					Content: client.NewTextContent("You seem to be struggling with web/research tasks. Consider using cloud_delegate to handle this on Shannon Cloud."),
 				})
+				markInjected()
 			}
 		}
 	}
@@ -1351,6 +1395,38 @@ func isRetryableLLMError(err error) bool {
 		return true
 	}
 	return false
+}
+
+// classifyLLMError returns a human-readable reason for an LLM error.
+// Used in retry messages so the UI can show why the request is being retried.
+func classifyLLMError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.StatusCode {
+		case 429:
+			return "rate limited"
+		case 529:
+			return "API overloaded"
+		case 500, 502, 503:
+			return "server error"
+		default:
+			return fmt.Sprintf("HTTP %d", apiErr.StatusCode)
+		}
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "timeout") {
+		return "request timeout"
+	}
+	if strings.Contains(msg, "connection reset") || strings.Contains(msg, "broken pipe") {
+		return "connection error"
+	}
+	if strings.Contains(msg, "stream") {
+		return "stream interrupted"
+	}
+	return "transient error"
 }
 
 // checkPermissionAndApproval runs the permission engine check, then falls back

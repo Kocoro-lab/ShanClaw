@@ -144,7 +144,7 @@ var daemonStartCmd = &cobra.Command{
 			}
 			// Read cached layers from deps (refreshed on any config reload)
 			bl, gwOv, po, mgr := deps.RebuildLayers()
-			newReg := tools.RebuildRegistryForHealth(bl, gwOv, po, supervisor.HealthStates(), mgr)
+			newReg := tools.RebuildRegistryForHealth(bl, gwOv, po, supervisor.HealthStates(), mgr, supervisor)
 			deps.WriteLock()
 			deps.Registry = newReg
 			deps.WriteUnlock()
@@ -156,6 +156,19 @@ var daemonStartCmd = &cobra.Command{
 		deps.WriteUnlock()
 
 		supervisor.Start(ctx)
+
+		// Force initial registry rebuild to attach the supervisor to MCPTools.
+		// CompleteRegistration creates tools before the supervisor exists, so
+		// they lack on-demand reconnect. This rebuild replaces them with
+		// supervisor-aware instances from the cached tool list.
+		{
+			bl, gwOv, po, mgr := deps.RebuildLayers()
+			initReg := tools.RebuildRegistryForHealth(bl, gwOv, po, supervisor.HealthStates(), mgr, supervisor)
+			deps.WriteLock()
+			deps.Registry = initReg
+			deps.WriteUnlock()
+			log.Printf("MCP registry initialized with supervisor: %d tools", len(initReg.All()))
+		}
 
 		if !cfg.Daemon.AutoApprove {
 			log.Println("daemon: interactive approval mode — tools requiring approval will be sent to the client for user confirmation. Set daemon.auto_approve: true in config to auto-approve all tools.")

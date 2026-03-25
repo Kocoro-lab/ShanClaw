@@ -208,7 +208,7 @@ func TestRebuildRegistryForHealth_PlaywrightHealthy(t *testing.T) {
 		{ServerName: "playwright", Tool: mcpproto.Tool{Name: "browser_navigate"}},
 	})
 
-	reg := RebuildRegistryForHealth(baseline, nil, nil, healthStates, mgr)
+	reg := RebuildRegistryForHealth(baseline, nil, nil, healthStates, mgr, nil)
 	if _, ok := reg.Get("browser"); ok {
 		t.Error("legacy browser should be removed when Playwright is healthy")
 	}
@@ -226,9 +226,19 @@ func TestRebuildRegistryForHealth_PlaywrightDisconnected(t *testing.T) {
 		"playwright": {State: mcp.StateDisconnected},
 	}
 
-	reg := RebuildRegistryForHealth(baseline, nil, nil, healthStates, nil)
-	if _, ok := reg.Get("browser"); !ok {
-		t.Error("legacy browser should remain when Playwright is disconnected")
+	mgr := mcp.NewClientManager()
+	mgr.SeedToolCache("playwright", []mcp.RemoteTool{
+		{ServerName: "playwright", Tool: mcpproto.Tool{Name: "browser_navigate"}},
+	})
+
+	reg := RebuildRegistryForHealth(baseline, nil, nil, healthStates, mgr, nil)
+	// Disconnected Playwright tools are included from cache for on-demand reconnect.
+	if _, ok := reg.Get("browser_navigate"); !ok {
+		t.Error("browser_navigate should be present from cache even when disconnected")
+	}
+	// Legacy browser is removed when Playwright tools are present (even disconnected).
+	if _, ok := reg.Get("browser"); ok {
+		t.Error("legacy browser should be removed when Playwright tools are present")
 	}
 }
 
@@ -244,7 +254,7 @@ func TestRebuildRegistryForHealth_GatewayAndPostOverlays(t *testing.T) {
 		&NotifyTool{},
 	}
 
-	reg := RebuildRegistryForHealth(baseline, gatewayOverlay, postOverlays, nil, nil)
+	reg := RebuildRegistryForHealth(baseline, gatewayOverlay, postOverlays, nil, nil, nil)
 	if _, ok := reg.Get("think"); !ok {
 		t.Error("baseline tool 'think' should be present")
 	}

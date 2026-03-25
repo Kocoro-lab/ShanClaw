@@ -45,3 +45,31 @@ func TestIsRetryableLLMError(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyLLMError(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		expect string
+	}{
+		{"nil", nil, "unknown"},
+		{"rate limit", &client.APIError{StatusCode: 429}, "rate limited"},
+		{"overloaded", &client.APIError{StatusCode: 529}, "API overloaded"},
+		{"server 500", &client.APIError{StatusCode: 500}, "server error"},
+		{"server 502", &client.APIError{StatusCode: 502}, "server error"},
+		{"server 503", &client.APIError{StatusCode: 503}, "server error"},
+		{"bad request", &client.APIError{StatusCode: 400}, "HTTP 400"},
+		{"timeout", fmt.Errorf("request failed: context deadline exceeded"), "request timeout"},
+		{"connection reset", fmt.Errorf("request failed: connection reset"), "connection error"},
+		{"stream error", fmt.Errorf("stream read error: unexpected EOF"), "stream interrupted"},
+		{"generic", fmt.Errorf("something else"), "transient error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyLLMError(tt.err)
+			if got != tt.expect {
+				t.Errorf("classifyLLMError(%v) = %q, want %q", tt.err, got, tt.expect)
+			}
+		})
+	}
+}

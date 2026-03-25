@@ -39,13 +39,14 @@ type AgentMCPConfig struct {
 // AgentMCPServerRef mirrors the fields needed for per-agent MCP server config.
 // We keep it simple — the full MCPServerConfig is resolved at merge time.
 type AgentMCPServerRef struct {
-	Command  string            `yaml:"command" json:"command,omitempty"`
-	Args     []string          `yaml:"args,omitempty" json:"args,omitempty"`
-	Env      map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
-	Type     string            `yaml:"type,omitempty" json:"type,omitempty"`
-	URL      string            `yaml:"url,omitempty" json:"url,omitempty"`
-	Disabled bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
-	Context  string            `yaml:"context,omitempty" json:"context,omitempty"`
+	Command   string            `yaml:"command" json:"command,omitempty"`
+	Args      []string          `yaml:"args,omitempty" json:"args,omitempty"`
+	Env       map[string]string `yaml:"env,omitempty" json:"env,omitempty"`
+	Type      string            `yaml:"type,omitempty" json:"type,omitempty"`
+	URL       string            `yaml:"url,omitempty" json:"url,omitempty"`
+	Disabled  bool              `yaml:"disabled,omitempty" json:"disabled,omitempty"`
+	Context   string            `yaml:"context,omitempty" json:"context,omitempty"`
+	KeepAlive bool              `yaml:"keep_alive,omitempty" json:"keep_alive,omitempty"`
 }
 
 // WatchEntry defines a single file system watch path for an agent.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -16,13 +17,14 @@ import (
 
 // MCPServerConfig describes how to connect to an MCP server.
 type MCPServerConfig struct {
-	Command  string            `yaml:"command"            mapstructure:"command"  json:"command"`
-	Args     []string          `yaml:"args,omitempty"     mapstructure:"args"     json:"args,omitempty"`
-	Env      map[string]string `yaml:"env,omitempty"      mapstructure:"env"      json:"env,omitempty"`
-	Type     string            `yaml:"type,omitempty"     mapstructure:"type"     json:"type,omitempty"`     // "stdio" (default) or "http"
-	URL      string            `yaml:"url,omitempty"      mapstructure:"url"      json:"url,omitempty"`      // for http type
-	Disabled bool              `yaml:"disabled,omitempty" mapstructure:"disabled" json:"disabled,omitempty"` // skip this server
-	Context  string            `yaml:"context,omitempty"  mapstructure:"context"  json:"context,omitempty"`  // LLM context injected into system prompt
+	Command   string            `yaml:"command"              mapstructure:"command"   json:"command"`
+	Args      []string          `yaml:"args,omitempty"       mapstructure:"args"      json:"args,omitempty"`
+	Env       map[string]string `yaml:"env,omitempty"        mapstructure:"env"       json:"env,omitempty"`
+	Type      string            `yaml:"type,omitempty"       mapstructure:"type"      json:"type,omitempty"`      // "stdio" (default) or "http"
+	URL       string            `yaml:"url,omitempty"        mapstructure:"url"       json:"url,omitempty"`       // for http type
+	Disabled  bool              `yaml:"disabled,omitempty"   mapstructure:"disabled"  json:"disabled,omitempty"`  // skip this server
+	Context   string            `yaml:"context,omitempty"    mapstructure:"context"   json:"context,omitempty"`   // LLM context injected into system prompt
+	KeepAlive bool              `yaml:"keep_alive,omitempty" mapstructure:"keep_alive" json:"keep_alive,omitempty"` // stay connected between turns (skip on-demand teardown)
 }
 
 // RemoteTool represents a tool discovered from an MCP server.
@@ -39,6 +41,7 @@ type ClientManager struct {
 	toolCache   map[string][]RemoteTool        // server name → last-known tools
 	reconnectMu map[string]*sync.Mutex         // per-server reconnect serialization
 	supervised  bool                           // when true, skip inline reconnect in CallTool
+	idleTimers  map[string]*time.Timer         // per-server idle disconnect timers
 }
 
 // NewClientManager creates a new MCP client manager.
@@ -292,6 +295,62 @@ func (m *ClientManager) Close() {
 	wg.Wait()
 }
 
+// ConfigFor returns the config for a server, if any.
+func (m *ClientManager) ConfigFor(serverName string) (MCPServerConfig, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg, ok := m.configs[serverName]
+	return cfg, ok
+}
+
+// Disconnect closes a single server's client, removing it from the active map.
+// The config and tool cache are preserved so the server can reconnect later.
+func (m *ClientManager) Disconnect(serverName string) {
+	m.mu.Lock()
+	// Cancel any pending idle timer for this server.
+	if t, ok := m.idleTimers[serverName]; ok {
+		t.Stop()
+		delete(m.idleTimers, serverName)
+	}
+	c, ok := m.clients[serverName]
+	if ok {
+		delete(m.clients, serverName)
+	}
+	m.mu.Unlock()
+	if ok && c != nil {
+		_ = c.Close()
+	}
+}
+
+// DisconnectAfterIdle schedules a Disconnect after the given idle duration.
+// If called again before the timer fires, the timer resets. This allows
+// multi-turn browser workflows to keep the connection alive while
+// disconnecting after a period of inactivity.
+func (m *ClientManager) DisconnectAfterIdle(serverName string, d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.idleTimers == nil {
+		m.idleTimers = make(map[string]*time.Timer)
+	}
+	if t, ok := m.idleTimers[serverName]; ok {
+		t.Stop()
+	}
+	m.idleTimers[serverName] = time.AfterFunc(d, func() {
+		log.Printf("[mcp] %s: idle timeout reached, disconnecting", serverName)
+		m.Disconnect(serverName)
+	})
+}
+
+// CancelIdleDisconnect cancels a pending idle disconnect timer, if any.
+func (m *ClientManager) CancelIdleDisconnect(serverName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.idleTimers[serverName]; ok {
+		t.Stop()
+		delete(m.idleTimers, serverName)
+	}
+}
+
 func (m *ClientManager) SetSupervised(v bool) {
 	m.mu.Lock()
 	m.supervised = v
@@ -315,6 +374,20 @@ func (m *ClientManager) SeedToolCache(serverName string, tools []RemoteTool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.toolCache[serverName] = tools
+}
+
+// SeedClient injects a client for a server. Test helper only.
+func (m *ClientManager) SeedClient(serverName string, c mcpclient.MCPClient) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clients[serverName] = c
+}
+
+// SeedConfig sets the config for a server. Test helper only.
+func (m *ClientManager) SeedConfig(serverName string, cfg MCPServerConfig) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.configs[serverName] = cfg
 }
 
 func (m *ClientManager) ProbeTransport(ctx context.Context, serverName string) error {

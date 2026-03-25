@@ -199,7 +199,17 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 		return nil, fmt.Errorf("daemon not fully configured")
 	}
 	if sup != nil {
-		sup.ProbeNow("playwright")
+		// Cancel any pending idle disconnect — a new turn is starting.
+		if _, _, _, mgr := deps.RebuildLayers(); mgr != nil {
+			mgr.CancelIdleDisconnect("playwright")
+		}
+		// Only probe+reconnect Playwright when it's not already disconnected.
+		// When the user closes Chrome, the periodic probe marks it Disconnected.
+		// Calling ProbeNow on a Disconnected server triggers attemptReconnect,
+		// which relaunches Chrome — disruptive if the task doesn't need browser tools.
+		if h := sup.HealthFor("playwright"); h.State != mcp.StateDisconnected {
+			sup.ProbeNow("playwright")
+		}
 	}
 	// Phase 2: re-snapshot to get post-swap registry
 	cfg, baseReg, _ := deps.Snapshot()
@@ -561,6 +571,7 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 			source = "unknown"
 		}
 		runMsgs := loop.RunMessages()
+		runInjected := loop.RunMessageInjected()
 		if len(runMsgs) > 0 {
 			// RunMessages includes: [user prompt, assistant+tool_use, tool_result, ..., final assistant].
 			// If the user message was already appended pre-loop, skip the first
@@ -570,11 +581,13 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 				startIdx = 1
 			}
 			replyTime := time.Now()
-			for _, msg := range runMsgs[startIdx:] {
+			for i, msg := range runMsgs[startIdx:] {
 				sess.Messages = append(sess.Messages, msg)
-				sess.MessageMeta = append(sess.MessageMeta,
-					session.MessageMeta{Source: source, Timestamp: session.TimePtr(replyTime)},
-				)
+				meta := session.MessageMeta{Source: source, Timestamp: session.TimePtr(replyTime)}
+				if i+startIdx < len(runInjected) && runInjected[i+startIdx] {
+					meta.SystemInjected = true
+				}
+				sess.MessageMeta = append(sess.MessageMeta, meta)
 			}
 		} else {
 			// Fallback: flat text (early error or no messages accumulated).
@@ -617,6 +630,21 @@ func RunAgent(ctx context.Context, deps *ServerDeps, req RunAgentRequest, handle
 	}
 
 	log.Printf("daemon: reply to %s (%d tokens, $%.4f)", agentName, usage.TotalTokens, usage.CostUSD)
+
+	// Unless keep_alive is set, schedule Playwright disconnect after 5 minutes
+	// of idle. Multi-turn browser workflows keep the connection alive (each
+	// turn resets the timer). After 5 minutes with no browser activity, Chrome
+	// closes. The on-demand reconnect in MCPTool.Run restarts it if needed.
+	if sup != nil {
+		if h := sup.HealthFor("playwright"); h.State == mcp.StateHealthy {
+			if _, _, _, mgr := deps.RebuildLayers(); mgr != nil {
+				if cfg, ok := mgr.ConfigFor("playwright"); !ok || !cfg.KeepAlive {
+					mgr.DisconnectAfterIdle("playwright", 5*time.Minute)
+					log.Printf("daemon: Playwright idle disconnect scheduled (5m)")
+				}
+			}
+		}
+	}
 
 	return &RunAgentResult{
 		Reply:     result,

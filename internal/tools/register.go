@@ -6,7 +6,6 @@ import (
 	"log"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Kocoro-lab/ShanClaw/internal/agent"
@@ -195,14 +194,18 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 			}
 			reg.Remove("browser")
 			log.Printf("Playwright MCP connected — disabled legacy browser tool")
-			// Hide Chrome so the Bridge extension tab doesn't steal focus.
-			// Do NOT close the connect.html tab — the Bridge relay connection
-			// depends on it. Closing it kills the CDP session and triggers
-			// an immediate supervisor reconnect that reopens Chrome.
-			go func() {
-				time.Sleep(2 * time.Second) // wait for Bridge handshake to complete
-				hideChrome()
-			}()
+			// Unless keep_alive is set, disconnect Playwright after discovering
+			// its tools. The tool cache persists, and on-demand reconnect in
+			// MCPTool.Run will restart playwright-mcp when actually needed.
+			if cfg, ok := mcpMgr.ConfigFor("playwright"); !ok || !cfg.KeepAlive {
+				mcpMgr.Disconnect("playwright")
+				log.Printf("Playwright MCP disconnected — will reconnect on demand")
+			} else {
+				go func() {
+					time.Sleep(2 * time.Second)
+					hideChrome()
+				}()
+			}
 		}
 	}
 
@@ -297,83 +300,34 @@ func resolveMCPServers(cfg *config.Config, agentDef ...*agents.Agent) map[string
 	// Overlay agent-specific servers
 	for name, ref := range agentMCP.Servers {
 		result[name] = mcp.MCPServerConfig{
-			Command:  ref.Command,
-			Args:     ref.Args,
-			Env:      ref.Env,
-			Type:     ref.Type,
-			URL:      ref.URL,
-			Disabled: ref.Disabled,
-			Context:  ref.Context,
+			Command:   ref.Command,
+			Args:      ref.Args,
+			Env:       ref.Env,
+			Type:      ref.Type,
+			URL:       ref.URL,
+			Disabled:  ref.Disabled,
+			Context:   ref.Context,
+			KeepAlive: ref.KeepAlive,
 		}
 	}
 
 	return result
 }
 
-// closePlaywrightExtensionTab closes the Playwright MCP Bridge's connect.html
-// tab after the CDP connection is fully established. The relay connection
-// survives tab closure once connectToTab has completed in the background
-// service worker.
-func closePlaywrightExtensionTab(mcpMgr *mcp.ClientManager) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
-	// Small delay to ensure connectToTab has completed in the extension
-	time.Sleep(2 * time.Second)
-
-	// List tabs to find the extension connect page
-	content, _, err := mcpMgr.CallTool(ctx, "playwright", "browser_tabs", map[string]any{"action": "list"})
-	if err != nil {
-		log.Printf("Playwright: failed to list tabs for cleanup: %v", err)
-		return
-	}
-
-	log.Printf("Playwright: tab list output: %s", content)
-
-	// Look for the connect.html tab by checking for the extension URL pattern.
-	// Format from Playwright MCP: "- 0: (current) [Title](chrome-extension://...connect.html...)"
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "connect.html") || strings.Contains(line, "chrome-extension://") {
-			// Extract tab index — format: "- N: ..." where N is the tab index
-			for i, ch := range line {
-				if ch >= '0' && ch <= '9' {
-					end := i
-					for end < len(line) && line[end] >= '0' && line[end] <= '9' {
-						end++
-					}
-					idx := line[i:end]
-					idxNum := 0
-					for _, c := range idx {
-						idxNum = idxNum*10 + int(c-'0')
-					}
-					log.Printf("Playwright: found extension tab at index %d, closing...", idxNum)
-					_, _, closeErr := mcpMgr.CallTool(ctx, "playwright", "browser_tabs", map[string]any{
-						"action": "close",
-						"index":  idxNum,
-					})
-					if closeErr != nil {
-						log.Printf("Playwright: failed to close extension tab: %v", closeErr)
-					} else {
-						log.Printf("Playwright: closed Bridge extension connect tab (index %d)", idxNum)
-					}
-					return
-				}
-			}
-		}
-	}
-	log.Printf("Playwright: no extension tab found in tab list")
-}
-
-// CleanupPlaywrightReconnect closes the Bridge extension connect.html tab
-// and hides Chrome after a supervisor-driven reconnect. The ctx should be
-// the supervisor's context so cleanup is cancelled on shutdown.
+// CleanupPlaywrightReconnect runs after a supervisor-driven reconnect.
+// In keep_alive mode, hides Chrome so the persistent connection doesn't
+// steal focus. In on-demand mode, leaves Chrome visible so the user can
+// watch the browser automation.
 func CleanupPlaywrightReconnect(ctx context.Context, mcpMgr *mcp.ClientManager) {
 	if ctx.Err() != nil {
 		return
 	}
-	// Wait for Bridge handshake, then just hide Chrome.
-	// Do NOT close the connect.html tab — it kills the relay connection.
+	cfg, ok := mcpMgr.ConfigFor("playwright")
+	if !ok || !cfg.KeepAlive {
+		return // on-demand: leave Chrome visible during the turn
+	}
+	// keep_alive: hide Chrome so it doesn't steal focus.
 	time.Sleep(2 * time.Second)
 	if ctx.Err() != nil {
 		return
@@ -450,23 +404,26 @@ func ExtractPostOverlays(full, baseline *agent.ToolRegistry) []agent.Tool {
 	return result
 }
 
-// RebuildRegistryForHealth creates a new registry from cached layers, only
-// including tools from healthy MCP servers. When Playwright is healthy, the
-// legacy browser tool is removed from the new registry (but never cleaned up
-// — in-flight sessions may share the instance).
+// RebuildRegistryForHealth creates a new registry from cached layers,
+// including tools from MCP servers. Healthy servers' tools work directly.
+// Disconnected servers with cached tools are included with an on-demand
+// reconnect capability (via supervisor) so the LLM can trigger reconnect
+// only when it actually invokes a browser tool. When Playwright tools are
+// present (healthy or cached), the legacy browser tool is removed.
 func RebuildRegistryForHealth(
 	baseline *agent.ToolRegistry,
 	gatewayOverlay []agent.Tool,
 	postOverlays []agent.Tool,
 	healthStates map[string]mcp.ServerHealth,
 	mcpMgr *mcp.ClientManager,
+	supervisor *mcp.Supervisor,
 ) *agent.ToolRegistry {
 	reg := baseline.Clone()
 
-	playwrightHealthy := false
+	playwrightPresent := false
 	if mcpMgr != nil {
 		for serverName, health := range healthStates {
-			if health.State != mcp.StateHealthy {
+			if health.State != mcp.StateHealthy && health.State != mcp.StateDisconnected {
 				continue
 			}
 			tools := mcpMgr.CachedTools(serverName)
@@ -474,9 +431,15 @@ func RebuildRegistryForHealth(
 				if _, exists := reg.Get(t.Tool.Name); exists {
 					continue
 				}
-				reg.Register(NewMCPTool(t.ServerName, t.Tool, mcpMgr))
+				mt := NewMCPTool(t.ServerName, t.Tool, mcpMgr)
+				// Disconnected servers get the supervisor for on-demand reconnect:
+				// Chrome only relaunches when the LLM actually invokes a browser tool.
+				if health.State == mcp.StateDisconnected && supervisor != nil {
+					mt.SetSupervisor(supervisor)
+				}
+				reg.Register(mt)
 				if t.Tool.Name == "browser_navigate" {
-					playwrightHealthy = true
+					playwrightPresent = true
 				}
 			}
 		}
@@ -484,7 +447,7 @@ func RebuildRegistryForHealth(
 
 	// Do NOT call browserTool.Cleanup() — in-flight sessions share the instance.
 	// Only remove from the NEW registry.
-	if playwrightHealthy {
+	if playwrightPresent {
 		reg.Remove("browser")
 	}
 

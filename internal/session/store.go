@@ -18,9 +18,10 @@ func TimePtr(t time.Time) *time.Time { return &t }
 // MessageMeta holds per-message metadata not sent to the LLM gateway.
 // Indexed parallel to Session.Messages.
 type MessageMeta struct {
-	Source    string    `json:"source,omitempty"`     // "local", "slack", "line", "shanclaw", "webhook", "scheduler"
-	MessageID string    `json:"message_id,omitempty"` // stable ID for dedup (e.g. "msg-<uuid>")
-	Timestamp *time.Time `json:"timestamp,omitempty"` // when this message was sent/received; nil = legacy (pre-timestamp)
+	Source         string    `json:"source,omitempty"`          // "local", "slack", "line", "shanclaw", "webhook", "scheduler"
+	MessageID      string    `json:"message_id,omitempty"`      // stable ID for dedup (e.g. "msg-<uuid>")
+	Timestamp      *time.Time `json:"timestamp,omitempty"`      // when this message was sent/received; nil = legacy (pre-timestamp)
+	SystemInjected bool      `json:"system_injected,omitempty"` // true for guardrail/nudge messages injected by the agent loop
 }
 
 type Session struct {

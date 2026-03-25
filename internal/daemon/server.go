@@ -2005,7 +2005,7 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			bl, gwOv, po, mgr := s.deps.RebuildLayers()
-			rebuilt := tools.RebuildRegistryForHealth(bl, gwOv, po, newSupervisor.HealthStates(), mgr)
+			rebuilt := tools.RebuildRegistryForHealth(bl, gwOv, po, newSupervisor.HealthStates(), mgr, newSupervisor)
 			s.deps.WriteLock()
 			s.deps.Registry = rebuilt
 			s.deps.WriteUnlock()
@@ -2033,6 +2033,18 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		}
 
 		newSupervisor.Start(s.ctx)
+
+		// Force registry rebuild to attach supervisor to MCPTools (same
+		// reason as initial startup — CompleteRegistration creates tools
+		// before the supervisor exists).
+		{
+			bl, gwOv, po, mgr := s.deps.RebuildLayers()
+			initReg := tools.RebuildRegistryForHealth(bl, gwOv, po, newSupervisor.HealthStates(), mgr, newSupervisor)
+			s.deps.WriteLock()
+			s.deps.Registry = initReg
+			s.deps.WriteUnlock()
+			log.Printf("MCP registry initialized with supervisor (reload): %d tools", len(initReg.All()))
+		}
 	} else {
 		// Config changed but MCP servers didn't — update config and refresh
 		// cached rebuild layers so health-driven rebuilds use current settings.

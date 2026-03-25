@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/Kocoro-lab/ShanClaw/internal/agent"
@@ -18,6 +19,7 @@ type MCPTool struct {
 	serverName string
 	tool       mcpproto.Tool
 	manager    *mcp.ClientManager
+	supervisor *mcp.Supervisor // optional — enables on-demand reconnect
 }
 
 // NewMCPTool creates a tool adapter for an MCP server tool.
@@ -27,6 +29,12 @@ func NewMCPTool(serverName string, tool mcpproto.Tool, manager *mcp.ClientManage
 		tool:       tool,
 		manager:    manager,
 	}
+}
+
+// SetSupervisor enables on-demand reconnect: if CallTool fails and the server
+// is disconnected, ProbeNow triggers reconnect and the call is retried once.
+func (t *MCPTool) SetSupervisor(sup *mcp.Supervisor) {
+	t.supervisor = sup
 }
 
 func (t *MCPTool) Info() agent.ToolInfo {
@@ -78,6 +86,17 @@ func (t *MCPTool) Run(ctx context.Context, argsJSON string) (agent.ToolResult, e
 	}
 
 	content, isError, err := t.manager.CallTool(ctx, t.serverName, t.tool.Name, args)
+	if err != nil && t.supervisor != nil {
+		// Connection dead — attempt on-demand reconnect and retry once.
+		h := t.supervisor.HealthFor(t.serverName)
+		if h.State == mcp.StateDisconnected {
+			log.Printf("[mcp-tool] %s/%s: connection dead, triggering on-demand reconnect", t.serverName, t.tool.Name)
+			reconHealth := t.supervisor.ProbeNow(t.serverName)
+			if reconHealth.State == mcp.StateHealthy {
+				content, isError, err = t.manager.CallTool(ctx, t.serverName, t.tool.Name, args)
+			}
+		}
+	}
 	if err != nil {
 		return agent.ToolResult{Content: fmt.Sprintf("MCP call failed: %v", err), IsError: true}, nil
 	}

@@ -42,6 +42,7 @@ type ClientManager struct {
 	reconnectMu map[string]*sync.Mutex         // per-server reconnect serialization
 	supervised  bool                           // when true, skip inline reconnect in CallTool
 	idleTimers  map[string]*time.Timer         // per-server idle disconnect timers
+	needsSetup  map[string]bool                // servers gated by missing readiness marker
 }
 
 // NewClientManager creates a new MCP client manager.
@@ -51,6 +52,7 @@ func NewClientManager() *ClientManager {
 		configs:     make(map[string]MCPServerConfig),
 		toolCache:   make(map[string][]RemoteTool),
 		reconnectMu: make(map[string]*sync.Mutex),
+		needsSetup:  make(map[string]bool),
 	}
 }
 
@@ -355,6 +357,20 @@ func (m *ClientManager) SetSupervised(v bool) {
 	m.mu.Lock()
 	m.supervised = v
 	m.mu.Unlock()
+}
+
+// SetNeedsSetup marks a server as needing setup (e.g. readiness marker absent).
+func (m *ClientManager) SetNeedsSetup(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.needsSetup[name] = true
+}
+
+// NeedsSetup reports whether a server is gated by a missing readiness marker.
+func (m *ClientManager) NeedsSetup(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.needsSetup[name]
 }
 
 func (m *ClientManager) CachedTools(serverName string) []RemoteTool {

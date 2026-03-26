@@ -1900,6 +1900,8 @@ func (s *Server) handleConfigStatus(w http.ResponseWriter, r *http.Request) {
 		for name, srv := range cfg.MCPServers {
 			if srv.Disabled {
 				mcpStatus[name] = "disabled"
+			} else if mgr != nil && mgr.NeedsSetup(name) {
+				mcpStatus[name] = "needs_setup"
 			} else if connected[name] {
 				mcpStatus[name] = "connected"
 			} else {
@@ -2104,6 +2106,8 @@ func (s *Server) handleConfigReload(w http.ResponseWriter, r *http.Request) {
 		for name, srv := range newCfg.MCPServers {
 			if srv.Disabled {
 				mcpStatus[name] = "disabled"
+			} else if mgr != nil && mgr.NeedsSetup(name) {
+				mcpStatus[name] = "needs_setup"
 			} else if connected[name] {
 				mcpStatus[name] = "connected"
 			} else {

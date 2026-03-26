@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -167,6 +168,19 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 
 	mcpServers := resolveMCPServers(cfg, agentDef...)
 
+	// Gate playwright: require local readiness marker before spawning.
+	playwrightNeedsSetup := false
+	if pwCfg, hasPW := mcpServers["playwright"]; hasPW && !pwCfg.Disabled {
+		home, _ := os.UserHomeDir()
+		localDir := filepath.Join(home, ".shannon", "local")
+		sig := mcp.CommandSignature(pwCfg.Command, pwCfg.Args)
+		if !mcp.ValidatePlaywrightMarker(localDir, sig) {
+			delete(mcpServers, "playwright")
+			playwrightNeedsSetup = true
+			log.Printf("Playwright MCP needs setup on this machine — skipping launch")
+		}
+	}
+
 	var mcpMgr *mcp.ClientManager
 	if len(mcpServers) > 0 {
 		mcpMgr = mcp.NewClientManager()
@@ -207,6 +221,13 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 				}()
 			}
 		}
+	}
+
+	if playwrightNeedsSetup {
+		if mcpMgr == nil {
+			mcpMgr = mcp.NewClientManager()
+		}
+		mcpMgr.SetNeedsSetup("playwright")
 	}
 
 	err := RegisterServerTools(ctx, gw, reg)

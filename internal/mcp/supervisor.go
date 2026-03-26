@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -484,10 +486,12 @@ func (s *Supervisor) runCapabilityProbe(ctx context.Context, name string, entry 
 	old := entry.health.State
 
 	var newState HealthState
+	var capFailures int
 	if err != nil {
 		entry.capabilityBackoff.recordFailure()
 		entry.health.LastCapabilityError = err.Error()
 		entry.health.ConsecutiveFailures++
+		capFailures = entry.health.ConsecutiveFailures
 		newState = StateDisconnected
 	} else if result.Degraded {
 		entry.capabilityBackoff.recordFailure()
@@ -509,6 +513,17 @@ func (s *Supervisor) runCapabilityProbe(ctx context.Context, name string, entry 
 
 	if old != newState {
 		s.fireOnChange(name, old, newState)
+	}
+
+	// Auto-clear playwright readiness marker after 3 consecutive capability probe failures.
+	if name == "playwright" && capFailures >= 3 {
+		home, _ := os.UserHomeDir()
+		localDir := filepath.Join(home, ".shannon", "local")
+		if err := ClearPlaywrightMarker(localDir); err != nil {
+			log.Printf("[mcp-supervisor] Failed to clear playwright readiness marker: %v", err)
+		} else {
+			log.Printf("[mcp-supervisor] Playwright extension unreachable after %d probes — cleared readiness marker", capFailures)
+		}
 	}
 }
 

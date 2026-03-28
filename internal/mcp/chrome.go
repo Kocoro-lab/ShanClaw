@@ -95,7 +95,7 @@ func LaunchCDPChrome(port int) error {
 	cmd := exec.Command("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 		fmt.Sprintf("--remote-debugging-port=%d", port),
 		fmt.Sprintf("--user-data-dir=%s", cdpDataDir),
-		"--window-position=0,0",
+		"--window-position=-10000,-10000",
 	)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -110,13 +110,10 @@ func LaunchCDPChrome(port int) error {
 		time.Sleep(500 * time.Millisecond)
 		if IsChromeCDPReachable(port) {
 			log.Printf("[chrome-cdp] Chrome CDP reachable on port %d", port)
-			// Minimize in background — retry a few times since the window
-			// may not exist yet when CDP first becomes reachable.
+			// Minimize after a short delay — window may not exist yet when CDP first becomes reachable.
 			go func() {
-				for i := 0; i < 5; i++ {
-					time.Sleep(1 * time.Second)
-					minimizeCDPChromeSync()
-				}
+				time.Sleep(2 * time.Second)
+				minimizeCDPChromeSync()
 			}()
 			return nil
 		}

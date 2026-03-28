@@ -136,19 +136,16 @@ func LoadAgent(agentsDir, name string) (*Agent, error) {
 	// Load agent-scoped commands (optional)
 	ag.Commands = loadAgentCommands(filepath.Join(dir, "commands"))
 
-	// Load skills using one of two modes:
-	// 1. Attached manifest (_attached.yaml): agent uses only the listed skills,
-	//    resolved from global/bundled sources. Enables the toggle model.
-	// 2. No manifest: inherit all global + bundled skills (backwards-compatible).
+	// Load skills from _attached.yaml manifest. No manifest = no skills.
+	// Users explicitly attach skills via the agent editor toggle checklist.
 	shannonDir := filepath.Dir(agentsDir)
 	attachedNames, hasManifest := loadAttachedSkills(filepath.Join(dir, "_attached.yaml"))
-	if hasManifest {
+	if hasManifest && len(attachedNames) > 0 {
 		globalSkillsDir := filepath.Join(shannonDir, "skills")
 		bundledSrc, err := skills.BundledSkillSource(shannonDir)
 		if err != nil {
 			return nil, fmt.Errorf("agent %q: failed to load bundled skills: %w", name, err)
 		}
-		// Load all available skills, then filter to only attached names
 		allSkills, err := skills.LoadSkills(
 			skills.SkillSource{Dir: globalSkillsDir, Source: "global"},
 			bundledSrc,
@@ -160,27 +157,11 @@ func LoadAgent(agentsDir, name string) (*Agent, error) {
 		for _, n := range attachedNames {
 			attached[n] = true
 		}
-		var filtered []*skills.Skill
 		for _, s := range allSkills {
 			if attached[s.Name] {
-				filtered = append(filtered, s)
+				ag.Skills = append(ag.Skills, s)
 			}
 		}
-		ag.Skills = filtered
-	} else {
-		globalSkillsDir := filepath.Join(shannonDir, "skills")
-		bundledSrc, err := skills.BundledSkillSource(shannonDir)
-		if err != nil {
-			return nil, fmt.Errorf("agent %q: failed to load bundled skills: %w", name, err)
-		}
-		loadedSkills, err := skills.LoadSkills(
-			skills.SkillSource{Dir: globalSkillsDir, Source: "global"},
-			bundledSrc,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("agent %q: bad skills: %w", name, err)
-		}
-		ag.Skills = loadedSkills
 	}
 
 	return ag, nil

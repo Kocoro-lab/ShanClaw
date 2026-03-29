@@ -68,6 +68,11 @@ var daemonStartCmd = &cobra.Command{
 		}
 		defer pidFile.Close()
 
+		// Clean up orphaned Chrome CDP from a previous hard kill. Must run AFTER
+		// AcquirePIDFile — holding the lock guarantees no other daemon is alive,
+		// so any Chrome CDP we find is truly orphaned (not owned by a peer).
+		mcp.CleanupOrphanedCDPChrome()
+
 		gw := client.NewGatewayClient(cfg.Endpoint, cfg.APIKey)
 		baselineReg, reg, skillsPtr, mcpMgr, cleanup, serverErr := tools.RegisterAllWithBaseline(gw, cfg)
 		if serverErr != nil {

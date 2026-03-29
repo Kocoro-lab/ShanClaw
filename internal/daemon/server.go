@@ -38,7 +38,7 @@ type Server struct {
 	server                 *http.Server
 	listener               net.Listener
 	version                string
-	ctx                    context.Context    // daemon lifecycle context, set on Start
+	ctx                    context.Context // daemon lifecycle context, set on Start
 	cancel                 context.CancelFunc
 	approvalBroker         *ApprovalBroker
 	eventBus               *EventBus
@@ -48,6 +48,12 @@ type Server struct {
 	pendingBrokers sync.Map // map[string]*ApprovalBroker
 	onReload       func()   // called after config reload to restart watchers/heartbeat
 }
+
+var (
+	showChromeOnPortFn      = mcp.ShowCDPChromeOnPort
+	hideChromeOnPortFn      = mcp.HideCDPChromeOnPort
+	getChromeStatusOnPortFn = mcp.GetCDPChromeStatusOnPort
+)
 
 func NewServer(port int, client *Client, deps *ServerDeps, version string) *Server {
 	return &Server{
@@ -59,6 +65,21 @@ func NewServer(port int, client *Client, deps *ServerDeps, version string) *Serv
 		eventBus:               NewEventBus(),
 		notifyApprovalResolved: func(p ApprovalResolvedPayload) error { return nil },
 	}
+}
+
+func (s *Server) chromeControlPort() int {
+	if s == nil || s.deps == nil {
+		return mcp.DefaultCDPPort
+	}
+	cfg, _, _ := s.deps.Snapshot()
+	if cfg == nil || cfg.MCPServers == nil {
+		return mcp.DefaultCDPPort
+	}
+	playwright, ok := cfg.MCPServers["playwright"]
+	if !ok {
+		return mcp.DefaultCDPPort
+	}
+	return mcp.PlaywrightCDPPort(mcp.NormalizePlaywrightCDPConfig(playwright))
 }
 
 // SetApprovalResolvedNotifier sets the function called to notify Cloud when
@@ -162,7 +183,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 func (s *Server) handleChromeShow(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := mcp.ShowCDPChrome(); err != nil {
+	if err := showChromeOnPortFn(s.chromeControlPort()); err != nil {
 		if errors.Is(err, mcp.ErrChromeNotRunning) {
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]string{"error": "chrome_not_running"})
@@ -177,7 +198,7 @@ func (s *Server) handleChromeShow(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChromeHide(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	if err := mcp.HideCDPChrome(); err != nil {
+	if err := hideChromeOnPortFn(s.chromeControlPort()); err != nil {
 		if errors.Is(err, mcp.ErrChromeNotRunning) {
 			w.WriteHeader(http.StatusNotFound)
 			json.NewEncoder(w).Encode(map[string]string{"error": "chrome_not_running"})
@@ -192,7 +213,7 @@ func (s *Server) handleChromeHide(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleChromeStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	status := mcp.GetCDPChromeStatus()
+	status := getChromeStatusOnPortFn(s.chromeControlPort())
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"running":     status.Running,
 		"visible":     status.Visible,
@@ -650,8 +671,8 @@ func (h *httpEventHandler) OnUsage(usage agent.TurnUsage) {}
 // Threat model: localhost-only, unauthenticated but local-trusted.
 // Permission engine (hard-blocks, denied_commands) runs before this.
 // If daemon ever listens on non-localhost, this MUST require auth.
-func (h *httpEventHandler) OnCloudAgent(agentID, status, message string) {}
-func (h *httpEventHandler) OnCloudProgress(completed, total int)         {}
+func (h *httpEventHandler) OnCloudAgent(agentID, status, message string)           {}
+func (h *httpEventHandler) OnCloudProgress(completed, total int)                   {}
 func (h *httpEventHandler) OnCloudPlan(planType, content string, needsReview bool) {}
 
 func (h *httpEventHandler) OnApprovalNeeded(tool string, args string) bool {

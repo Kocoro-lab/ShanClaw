@@ -171,7 +171,7 @@ func CompleteRegistration(ctx context.Context, gw *client.GatewayClient, cfg *co
 	// skips Chrome entirely — it launches on-demand at first tool invocation.
 	if pwCfg, hasPW := mcpServers["playwright"]; hasPW && !pwCfg.Disabled && mcp.IsPlaywrightCDPMode(pwCfg) {
 		if pwCfg.KeepAlive {
-			if err := mcp.EnsureChromeDebugPort(mcp.DefaultCDPPort); err != nil {
+			if err := mcp.EnsureChromeDebugPort(mcp.PlaywrightCDPPort(pwCfg)); err != nil {
 				log.Printf("Playwright CDP: Chrome debug port unavailable: %v — skipping", err)
 				delete(mcpServers, "playwright")
 			}
@@ -301,6 +301,9 @@ func resolveMCPServers(cfg *config.Config, agentDef ...*agents.Agent) map[string
 	if len(agentDef) == 0 || agentDef[0] == nil || agentDef[0].Config == nil || agentDef[0].Config.MCPServers == nil {
 		result := make(map[string]mcp.MCPServerConfig, len(cfg.MCPServers))
 		for name, srv := range cfg.MCPServers {
+			if name == "playwright" {
+				srv = mcp.NormalizePlaywrightCDPConfig(srv)
+			}
 			result[name] = srv
 		}
 		return result
@@ -312,13 +315,16 @@ func resolveMCPServers(cfg *config.Config, agentDef ...*agents.Agent) map[string
 	// If inherit, start with global servers
 	if agentMCP.Inherit {
 		for name, srv := range cfg.MCPServers {
+			if name == "playwright" {
+				srv = mcp.NormalizePlaywrightCDPConfig(srv)
+			}
 			result[name] = srv
 		}
 	}
 
 	// Overlay agent-specific servers
 	for name, ref := range agentMCP.Servers {
-		result[name] = mcp.MCPServerConfig{
+		srv := mcp.MCPServerConfig{
 			Command:   ref.Command,
 			Args:      ref.Args,
 			Env:       ref.Env,
@@ -328,6 +334,10 @@ func resolveMCPServers(cfg *config.Config, agentDef ...*agents.Agent) map[string
 			Context:   ref.Context,
 			KeepAlive: ref.KeepAlive,
 		}
+		if name == "playwright" {
+			srv = mcp.NormalizePlaywrightCDPConfig(srv)
+		}
+		result[name] = srv
 	}
 
 	return result

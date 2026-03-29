@@ -14,7 +14,7 @@ import (
 type HealthState int
 
 const (
-	StateHealthy      HealthState = iota
+	StateHealthy HealthState = iota
 	StateDegraded
 	StateDisconnected
 )
@@ -116,7 +116,7 @@ type serverEntry struct {
 	transportBackoff  *backoffState
 	capabilityBackoff *backoffState
 	probeNowCh        chan struct{}       // signal channel (buffered size 1)
-	waitersMu         sync.Mutex         // protects waiters slice
+	waitersMu         sync.Mutex          // protects waiters slice
 	waiters           []chan ServerHealth // pending ProbeNow callers
 }
 
@@ -389,7 +389,7 @@ func (s *Supervisor) attemptReconnect(ctx context.Context, name string, entry *s
 	// CDP mode: ensure Chrome has the debug port before reconnecting playwright.
 	// Only when keepAlive is true — keepAlive=false defers Chrome launch to tool invocation.
 	if name == "playwright" && IsPlaywrightCDPMode(entry.config) && entry.config.KeepAlive {
-		if err := EnsureChromeDebugPort(DefaultCDPPort); err != nil {
+		if err := EnsureChromeDebugPort(PlaywrightCDPPort(entry.config)); err != nil {
 			log.Printf("[mcp-supervisor] %s: Chrome CDP unavailable: %v", name, err)
 			return
 		}
@@ -428,9 +428,10 @@ func (s *Supervisor) runTransportProbe(ctx context.Context, name string, entry *
 	// Chrome launches on-demand at first tool invocation — the supervisor should
 	// not auto-relaunch it between uses.
 	if name == "playwright" && IsPlaywrightCDPMode(entry.config) && entry.config.KeepAlive {
-		if !IsChromeCDPReachable(DefaultCDPPort) {
+		port := PlaywrightCDPPort(entry.config)
+		if !IsChromeCDPReachable(port) {
 			log.Printf("[mcp-supervisor] CDP Chrome unreachable — relaunching minimized")
-			if err := LaunchCDPChrome(DefaultCDPPort); err != nil {
+			if err := LaunchCDPChrome(port); err != nil {
 				log.Printf("[mcp-supervisor] CDP Chrome relaunch failed: %v", err)
 			}
 		}

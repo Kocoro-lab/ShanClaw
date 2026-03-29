@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,24 +38,24 @@ type RemoteTool struct {
 
 // ClientManager manages connections to multiple MCP servers.
 type ClientManager struct {
-	mu            sync.Mutex
-	clients       map[string]mcpclient.MCPClient // server name → client
-	configs       map[string]MCPServerConfig     // server name → config (for reconnect)
-	toolCache     map[string][]RemoteTool        // server name → last-known tools
-	reconnectMu   map[string]*sync.Mutex         // per-server reconnect serialization
-	supervised    bool                           // when true, skip inline reconnect in CallTool
-	idleTimers    map[string]*time.Timer         // per-server idle disconnect timers
-	needsSetup    map[string]bool                // servers gated by missing readiness marker
+	mu          sync.Mutex
+	clients     map[string]mcpclient.MCPClient // server name → client
+	configs     map[string]MCPServerConfig     // server name → config (for reconnect)
+	toolCache   map[string][]RemoteTool        // server name → last-known tools
+	reconnectMu map[string]*sync.Mutex         // per-server reconnect serialization
+	supervised  bool                           // when true, skip inline reconnect in CallTool
+	idleTimers  map[string]*time.Timer         // per-server idle disconnect timers
+	needsSetup  map[string]bool                // servers gated by missing readiness marker
 }
 
 // NewClientManager creates a new MCP client manager.
 func NewClientManager() *ClientManager {
 	return &ClientManager{
-		clients:       make(map[string]mcpclient.MCPClient),
-		configs:       make(map[string]MCPServerConfig),
-		toolCache:     make(map[string][]RemoteTool),
-		reconnectMu:   make(map[string]*sync.Mutex),
-		needsSetup:    make(map[string]bool),
+		clients:     make(map[string]mcpclient.MCPClient),
+		configs:     make(map[string]MCPServerConfig),
+		toolCache:   make(map[string][]RemoteTool),
+		reconnectMu: make(map[string]*sync.Mutex),
+		needsSetup:  make(map[string]bool),
 	}
 }
 
@@ -544,4 +547,65 @@ func IsPlaywrightCDPMode(cfg MCPServerConfig) bool {
 		}
 	}
 	return false
+}
+
+// NormalizePlaywrightCDPConfig migrates legacy localhost:9222 configs to the
+// dedicated daemon-owned CDP port while preserving explicit custom endpoints.
+func NormalizePlaywrightCDPConfig(cfg MCPServerConfig) MCPServerConfig {
+	if !IsPlaywrightCDPMode(cfg) {
+		return cfg
+	}
+	args := append([]string(nil), cfg.Args...)
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] != "--cdp-endpoint" {
+			continue
+		}
+		args[i+1] = normalizePlaywrightCDPEndpoint(args[i+1])
+		break
+	}
+	cfg.Args = args
+	return cfg
+}
+
+// PlaywrightCDPPort extracts the configured CDP port, defaulting to the
+// daemon-owned dedicated port when absent or invalid.
+func PlaywrightCDPPort(cfg MCPServerConfig) int {
+	if !IsPlaywrightCDPMode(cfg) {
+		return DefaultCDPPort
+	}
+	// Stop at len-1 so a malformed trailing "--cdp-endpoint" without a value
+	// safely falls back to the dedicated default instead of misparsing args.
+	for i := 0; i < len(cfg.Args)-1; i++ {
+		if cfg.Args[i] != "--cdp-endpoint" {
+			continue
+		}
+		u, err := url.Parse(cfg.Args[i+1])
+		if err != nil {
+			return DefaultCDPPort
+		}
+		if port := u.Port(); port != "" {
+			if n, err := strconv.Atoi(port); err == nil && n > 0 {
+				return n
+			}
+		}
+		return DefaultCDPPort
+	}
+	return DefaultCDPPort
+}
+
+func normalizePlaywrightCDPEndpoint(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	host := u.Hostname()
+	port := u.Port()
+	if port != strconv.Itoa(LegacyCDPPort) {
+		return raw
+	}
+	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return raw
+	}
+	u.Host = net.JoinHostPort("127.0.0.1", strconv.Itoa(DefaultCDPPort))
+	return u.String()
 }

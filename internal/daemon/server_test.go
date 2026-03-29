@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Kocoro-lab/ShanClaw/internal/config"
+	"github.com/Kocoro-lab/ShanClaw/internal/mcp"
 	"gopkg.in/yaml.v3"
 )
 
@@ -217,6 +218,131 @@ func TestServer_Message_AgentNotFound(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "error") {
 		t.Errorf("expected error in body, got %s", string(body))
+	}
+}
+
+func TestServer_ChromeHandlersUseConfiguredPlaywrightPort(t *testing.T) {
+	oldShow := showChromeOnPortFn
+	oldHide := hideChromeOnPortFn
+	oldStatus := getChromeStatusOnPortFn
+	defer func() {
+		showChromeOnPortFn = oldShow
+		hideChromeOnPortFn = oldHide
+		getChromeStatusOnPortFn = oldStatus
+	}()
+
+	var showPort, hidePort, statusPort int
+	showChromeOnPortFn = func(port int) error {
+		showPort = port
+		return nil
+	}
+	hideChromeOnPortFn = func(port int) error {
+		hidePort = port
+		return nil
+	}
+	getChromeStatusOnPortFn = func(port int) mcp.CDPChromeStatus {
+		statusPort = port
+		return mcp.CDPChromeStatus{Running: true, Visible: true}
+	}
+
+	deps := &ServerDeps{
+		Config: &config.Config{
+			MCPServers: map[string]mcp.MCPServerConfig{
+				"playwright": {
+					Args: []string{"--cdp-endpoint", "http://127.0.0.1:9333"},
+				},
+			},
+		},
+	}
+	srv := NewServer(0, nil, deps, "test")
+
+	showRec := httptest.NewRecorder()
+	srv.handleChromeShow(showRec, httptest.NewRequest(http.MethodPost, "/chrome/show", nil))
+	if showPort != 9333 {
+		t.Fatalf("show used port %d, want 9333", showPort)
+	}
+	if showRec.Code != http.StatusOK {
+		t.Fatalf("show status = %d, want 200", showRec.Code)
+	}
+	var showBody map[string]string
+	if err := json.NewDecoder(showRec.Body).Decode(&showBody); err != nil {
+		t.Fatalf("decode show body: %v", err)
+	}
+	if showBody["status"] != "visible" {
+		t.Fatalf("show body = %v, want visible status", showBody)
+	}
+
+	hideRec := httptest.NewRecorder()
+	srv.handleChromeHide(hideRec, httptest.NewRequest(http.MethodPost, "/chrome/hide", nil))
+	if hidePort != 9333 {
+		t.Fatalf("hide used port %d, want 9333", hidePort)
+	}
+	if hideRec.Code != http.StatusOK {
+		t.Fatalf("hide status = %d, want 200", hideRec.Code)
+	}
+	var hideBody map[string]string
+	if err := json.NewDecoder(hideRec.Body).Decode(&hideBody); err != nil {
+		t.Fatalf("decode hide body: %v", err)
+	}
+	if hideBody["status"] != "hidden" {
+		t.Fatalf("hide body = %v, want hidden status", hideBody)
+	}
+
+	statusRec := httptest.NewRecorder()
+	srv.handleChromeStatus(statusRec, httptest.NewRequest(http.MethodGet, "/chrome/status", nil))
+	if statusPort != 9333 {
+		t.Fatalf("status used port %d, want 9333", statusPort)
+	}
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", statusRec.Code)
+	}
+	var statusBody map[string]bool
+	if err := json.NewDecoder(statusRec.Body).Decode(&statusBody); err != nil {
+		t.Fatalf("decode status body: %v", err)
+	}
+	if !statusBody["running"] || !statusBody["visible"] {
+		t.Fatalf("status body = %v, want running+visible", statusBody)
+	}
+	if statusBody["probe_error"] {
+		t.Fatalf("status body = %v, want probe_error=false", statusBody)
+	}
+}
+
+func TestServer_ChromeHandlersNormalizeLegacyPlaywrightPort(t *testing.T) {
+	oldShow := showChromeOnPortFn
+	defer func() { showChromeOnPortFn = oldShow }()
+
+	var showPort int
+	showChromeOnPortFn = func(port int) error {
+		showPort = port
+		return nil
+	}
+
+	deps := &ServerDeps{
+		Config: &config.Config{
+			MCPServers: map[string]mcp.MCPServerConfig{
+				"playwright": {
+					Args: []string{"--cdp-endpoint", "http://localhost:9222"},
+				},
+			},
+		},
+	}
+	srv := NewServer(0, nil, deps, "test")
+
+	rec := httptest.NewRecorder()
+	srv.handleChromeShow(rec, httptest.NewRequest(http.MethodPost, "/chrome/show", nil))
+	if showPort != mcp.DefaultCDPPort {
+		t.Fatalf("show used port %d, want normalized default %d", showPort, mcp.DefaultCDPPort)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("show status = %d, want 200", rec.Code)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode show body: %v", err)
+	}
+	if body["status"] != "visible" {
+		t.Fatalf("show body = %v, want visible status", body)
 	}
 }
 
@@ -538,7 +664,7 @@ func TestServer_PatchConfig_NullDeletes(t *testing.T) {
 
 	// Set initial config
 	initial := map[string]interface{}{
-		"agent":    map[string]interface{}{"model": "gpt-4"},
+		"agent":     map[string]interface{}{"model": "gpt-4"},
 		"to_delete": "bye",
 	}
 	initialYAML, _ := yaml.Marshal(initial)
@@ -721,12 +847,12 @@ func TestNormalizePatchKeys(t *testing.T) {
 
 func TestStripRedactedSecrets(t *testing.T) {
 	tests := []struct {
-		name            string
-		input           map[string]interface{}
-		wantDeleted     []string // top-level keys that should be absent
-		wantKept        []string // top-level keys that should still be present
-		wantEnvDeleted  []string // mcp_servers.x-twitter.env keys that should be absent
-		wantEnvKept     []string // mcp_servers.x-twitter.env keys that should still be present
+		name           string
+		input          map[string]interface{}
+		wantDeleted    []string // top-level keys that should be absent
+		wantKept       []string // top-level keys that should still be present
+		wantEnvDeleted []string // mcp_servers.x-twitter.env keys that should be absent
+		wantEnvKept    []string // mcp_servers.x-twitter.env keys that should still be present
 	}{
 		{
 			name:        "api_key *** is dropped",

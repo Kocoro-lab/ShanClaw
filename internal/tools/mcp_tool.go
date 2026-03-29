@@ -14,6 +14,13 @@ import (
 
 const maxMCPDescLen = 500
 
+var (
+	isPlaywrightCDPMode          = mcp.IsPlaywrightCDPMode
+	playwrightCDPPort            = mcp.PlaywrightCDPPort
+	ensureChromeDebugPort        = mcp.EnsureChromeDebugPort
+	shouldPreflightChromeForTool = mcp.ShouldPreflightDedicatedChrome
+)
+
 // MCPTool wraps an MCP server tool as a local agent.Tool.
 type MCPTool struct {
 	serverName string
@@ -86,13 +93,15 @@ func (t *MCPTool) Run(ctx context.Context, argsJSON string) (agent.ToolResult, e
 	}
 
 	// CDP mode: ensure Chrome is running when playwright is not yet connected.
-	// Only check CDP when not connected — the HTTP check at /json/version can be
-	// slow while an active WebSocket session exists, causing false-negative timeouts.
-	// Chrome stays minimized — Playwright operates via CDP, not visible window.
+	// Also preflight the daemon-owned dedicated Chrome on first tool use for the
+	// default dedicated port, even if the Playwright MCP process is already connected.
+	// This preserves the copied-profile/session behavior instead of letting the MCP
+	// server improvise its own temporary browser.
 	if t.serverName == "playwright" {
-		if cfg, ok := t.manager.ConfigFor(t.serverName); ok && mcp.IsPlaywrightCDPMode(cfg) {
-			if !t.manager.IsConnected(t.serverName) {
-				if err := mcp.EnsureChromeDebugPort(mcp.DefaultCDPPort); err != nil {
+		if cfg, ok := t.manager.ConfigFor(t.serverName); ok && isPlaywrightCDPMode(cfg) {
+			port := playwrightCDPPort(cfg)
+			if !t.manager.IsConnected(t.serverName) || shouldPreflightChromeForTool(port) {
+				if err := ensureChromeDebugPort(port); err != nil {
 					return agent.ToolResult{Content: fmt.Sprintf("Chrome CDP unavailable: %v", err), IsError: true}, nil
 				}
 			}
@@ -108,8 +117,8 @@ func (t *MCPTool) Run(ctx context.Context, argsJSON string) (agent.ToolResult, e
 			// Re-ensure Chrome CDP is available before reconnecting — Chrome may
 			// have died along with the MCP connection.
 			if t.serverName == "playwright" {
-				if cfg, ok := t.manager.ConfigFor(t.serverName); ok && mcp.IsPlaywrightCDPMode(cfg) {
-					_ = mcp.EnsureChromeDebugPort(mcp.DefaultCDPPort)
+				if cfg, ok := t.manager.ConfigFor(t.serverName); ok && isPlaywrightCDPMode(cfg) {
+					_ = ensureChromeDebugPort(playwrightCDPPort(cfg))
 				}
 			}
 			reconHealth := t.supervisor.ProbeNow(t.serverName)

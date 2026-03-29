@@ -53,6 +53,43 @@ func TestIsPlaywrightCDPMode(t *testing.T) {
 	}
 }
 
+func TestNormalizePlaywrightCDPConfig_MigratesLegacyLocalhostPort(t *testing.T) {
+	cfg := MCPServerConfig{Args: []string{"--cdp-endpoint", "http://localhost:9222", "--caps", "vision,pdf"}}
+	normalized := NormalizePlaywrightCDPConfig(cfg)
+	want := "http://127.0.0.1:9223"
+	if normalized.Args[1] != want {
+		t.Fatalf("expected %s, got %s", want, normalized.Args[1])
+	}
+}
+
+func TestNormalizePlaywrightCDPConfig_PreservesCustomEndpoint(t *testing.T) {
+	cfg := MCPServerConfig{Args: []string{"--cdp-endpoint", "http://127.0.0.1:9333"}}
+	normalized := NormalizePlaywrightCDPConfig(cfg)
+	if normalized.Args[1] != "http://127.0.0.1:9333" {
+		t.Fatalf("expected custom endpoint to be preserved, got %s", normalized.Args[1])
+	}
+}
+
+func TestPlaywrightCDPPort(t *testing.T) {
+	cfg := MCPServerConfig{Args: []string{"--cdp-endpoint", "http://127.0.0.1:9333"}}
+	if got := PlaywrightCDPPort(cfg); got != 9333 {
+		t.Fatalf("expected port 9333, got %d", got)
+	}
+
+	cfg = MCPServerConfig{Args: []string{"--cdp-endpoint", "http://localhost:9222"}}
+	cfg = NormalizePlaywrightCDPConfig(cfg)
+	if got := PlaywrightCDPPort(cfg); got != DefaultCDPPort {
+		t.Fatalf("expected default dedicated port %d, got %d", DefaultCDPPort, got)
+	}
+}
+
+func TestPlaywrightCDPPortDefaultsWhenEndpointValueIsMissing(t *testing.T) {
+	cfg := MCPServerConfig{Args: []string{"--cdp-endpoint"}}
+	if got := PlaywrightCDPPort(cfg); got != DefaultCDPPort {
+		t.Fatalf("expected default dedicated port %d, got %d", DefaultCDPPort, got)
+	}
+}
+
 func TestConnectAll_StoresConfigOnFailure(t *testing.T) {
 	mgr := NewClientManager()
 	servers := map[string]MCPServerConfig{

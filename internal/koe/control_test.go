@@ -1,4 +1,4 @@
-//go:build darwin && cgo
+//go:build darwin && !ios && cgo
 
 package koe
 
@@ -222,6 +222,56 @@ func TestControlServerSSEDelivers(t *testing.T) {
 		`{"type":"voice_state","state":"listening"}`,
 		`{"type":"control_app","action":"open_settings"}`,
 		`{"type":"call_state","state":"on_call"}`,
+	}
+	br := bufio.NewReader(resp.Body)
+	var got []string
+	readDeadline := time.Now().Add(3 * time.Second)
+	for len(got) < len(want) && time.Now().Before(readDeadline) {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			break
+		}
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			got = append(got, strings.TrimSpace(data))
+		}
+	}
+	for i, w := range want {
+		if i >= len(got) || got[i] != w {
+			t.Errorf("SSE line %d = %q, want %q (all got: %v)", i, safeIdx(got, i), w, got)
+		}
+	}
+}
+
+// Pins the EXACT bytes Desktop's decoder reads. The Swift side asserts the same
+// three lines in KoeControlProtocolTests, so the contract is checked from both
+// ends rather than assumed — which is what was missing when a failed call and a
+// hang-up were the same event on the wire.
+func TestControlServerCallFailedCarriesReason(t *testing.T) {
+	s := NewControlServer(nil, nil, nil)
+	srv := httptest.NewServer(s.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/events", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /events: %v", err)
+	}
+	defer resp.Body.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for s.subscriberCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	s.EmitCallFailed(CallFailureAccountRequired)
+	// An empty reason must fall back to a plain `ended`: a hang-up the user
+	// asked for can never be reported to them as a failure.
+	s.EmitCallFailed("")
+	s.EmitCallState("ended")
+
+	want := []string{
+		`{"type":"call_state","state":"ended","reason":"account_required"}`,
+		`{"type":"call_state","state":"ended"}`,
+		`{"type":"call_state","state":"ended"}`,
 	}
 	br := bufio.NewReader(resp.Body)
 	var got []string

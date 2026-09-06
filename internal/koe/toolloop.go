@@ -1,5 +1,3 @@
-//go:build darwin && cgo
-
 package koe
 
 import (

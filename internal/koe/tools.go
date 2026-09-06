@@ -1,5 +1,3 @@
-//go:build darwin && cgo
-
 package koe
 
 import (
@@ -11,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Kocoro-lab/ShanClaw/internal/executionprofile"
 )
@@ -252,14 +251,30 @@ type ControlAppFunc func(ctx context.Context, action string) error
 
 // Dispatcher routes a realtime function call to link/resolver/state.
 type Dispatcher struct {
-	client     *DaemonClient
-	resolver   *AgentResolver
+	client     Backend
+	resolver   atomic.Pointer[AgentResolver]
 	state      *CallState
 	controlApp ControlAppFunc
 }
 
-func NewDispatcher(client *DaemonClient, resolver *AgentResolver, state *CallState, controlApp ControlAppFunc) *Dispatcher {
-	return &Dispatcher{client: client, resolver: resolver, state: state, controlApp: controlApp}
+func NewDispatcher(client Backend, resolver *AgentResolver, state *CallState, controlApp ControlAppFunc) *Dispatcher {
+	d := &Dispatcher{client: client, state: state, controlApp: controlApp}
+	d.SetResolver(resolver)
+	return d
+}
+
+// SetResolver swaps the agent registry. The registry arrives asynchronously on
+// hosts where ListAgents may block (up to 30s against a slow daemon), so it
+// must never sit on the call-start critical path.
+func (d *Dispatcher) SetResolver(r *AgentResolver) {
+	if r == nil {
+		r = NewAgentResolver(nil, nil)
+	}
+	d.resolver.Store(r)
+}
+
+func (d *Dispatcher) res() *AgentResolver {
+	return d.resolver.Load()
 }
 
 // SayResult is the do_task result contract shared with Realtime. Successful
@@ -379,7 +394,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, name string, argsJSON []byte)
 		if err := json.Unmarshal(argsJSON, &a); err != nil || a.Agent == "" {
 			return nil, fmt.Errorf("switch_agent requires an agent")
 		}
-		res := d.resolver.Resolve(a.Agent)
+		res := d.res().Resolve(a.Agent)
 		switch res.Status {
 		case ResolveResolved:
 			d.state.setBound(res.Slug)
@@ -511,22 +526,28 @@ func (d *Dispatcher) PrepareDoTask(argsJSON []byte, lang string, sameTurnMultiDi
 	}
 	agent := d.state.BoundAgent()
 	if a.Agent != "" {
-		res := d.resolver.Resolve(a.Agent)
+		// One snapshot for the whole decision. The resolver is swapped in mid-call
+		// once the agent registry lands (Session's async ListAgents on iOS,
+		// cmd/koe.go's deferred resolverHolder on macOS), so re-reading it between
+		// the resolve and the override guard would let the two halves of one
+		// decision disagree about which registry they are talking about.
+		resolver := d.res()
+		res := resolver.Resolve(a.Agent)
 		switch res.Status {
 		case ResolveResolved:
-			if agentOverrideAllowed(a.Task, d.resolver.spokenNamesFor(a.Agent, res.Slug)) {
+			if agentOverrideAllowed(a.Task, resolver.spokenNamesFor(a.Agent, res.Slug)) {
 				agent = res.Slug
 			} else {
 				log.Printf("koe[task]: agent override guard rejected %q; using bound %q", a.Agent, agent)
 			}
 		case ResolveAmbiguous:
-			if !agentOverrideAllowed(a.Task, d.resolver.spokenNamesFor(a.Agent, "")) {
+			if !agentOverrideAllowed(a.Task, resolver.spokenNamesFor(a.Agent, "")) {
 				break
 			}
 			say := clarifyWhich(lang, res.Candidates)
 			return DoTaskRequest{}, nil, &SayResult{Status: "clarify", SpokenSummary: say, Say: say}, nil
 		default:
-			if !agentOverrideAllowed(a.Task, d.resolver.spokenNamesFor(a.Agent, "")) {
+			if !agentOverrideAllowed(a.Task, resolver.spokenNamesFor(a.Agent, "")) {
 				break
 			}
 			// Unknown named agent → ask rather than silently using the default.

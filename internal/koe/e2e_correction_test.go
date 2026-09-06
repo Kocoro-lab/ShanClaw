@@ -1,4 +1,4 @@
-//go:build darwin && cgo && koe_diagnostic
+//go:build darwin && cgo && koe_diagnostic && !ios
 
 package koe
 

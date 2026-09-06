@@ -1,5 +1,3 @@
-//go:build darwin && cgo
-
 package koe
 
 import (
@@ -42,6 +40,7 @@ type controlEvent struct {
 	Level       float64 `json:"level,omitempty"`        // voice_state reactive RMS amplitude (0..1)
 	TaskPending bool    `json:"task_pending,omitempty"` // voice_state: a do_task is in flight (koe-mic-off)
 	Mic         string  `json:"mic,omitempty"`          // voice_state: "off" while user mic-off; absent = on
+	Reason      string  `json:"reason,omitempty"`       // call_state "ended": why it failed; absent = a normal hang-up
 }
 
 // StartCallRequest is the optional Desktop→Koe context payload for POST
@@ -263,6 +262,28 @@ func (s *ControlServer) EmitControlApp(action string) {
 // EmitCallState reports the call lifecycle to Desktop.
 func (s *ControlServer) EmitCallState(state string) {
 	s.broadcast(controlEvent{Type: "call_state", State: state})
+}
+
+// EmitCallFailed reports a call that never came up, or died on its own, as
+// `ended` PLUS a reason code (see ClassifyCallFailure).
+//
+// The state is hard-coded rather than a parameter. Desktop's decoder drops a
+// call_state event whose `state` it does not recognize, so any other value
+// would make an older Desktop ignore the event entirely and leave the call UI
+// open forever — strictly worse than the silence this fixes. A parameter every
+// caller filled with "ended" was an invitation to do exactly the thing this
+// comment warns about. `reason` is an additive field on the same event instead:
+// older builds ignore it and keep today's behaviour, newer builds can finally
+// tell the user what happened. Same discipline as voice_state's task_pending/mic.
+//
+// An empty reason falls back to a plain `ended`, so a normal hang-up can never
+// be dressed up as a failure.
+func (s *ControlServer) EmitCallFailed(reason string) {
+	if reason == "" {
+		s.EmitCallState("ended")
+		return
+	}
+	s.broadcast(controlEvent{Type: "call_state", State: "ended", Reason: reason})
 }
 
 // EmitMicStatus reports microphone health to Desktop. "silent" = the bound input

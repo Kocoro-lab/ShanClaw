@@ -23,7 +23,7 @@ Built on **[Shannon](https://github.com/Kocoro-lab/Shannon)** — the open-sourc
 
 - [Installation](#installation) · [Updating](#updating) · [Setup](#setup) · [Requirements](#requirements)
 - [Quick Start](#quick-start) · [One-Shot Examples](#one-shot-examples) · [Multi-step Cowork Recipes](#multi-step-cowork-recipes)
-- [CLI Usage](#cli-usage) · [Voice Front Brain](#voice-front-brain-macos) · [Commands](#commands)
+- [CLI Usage](#cli-usage) · [Voice Front Brain](#voice-front-brain) · [Commands](#commands)
 - [Local Tools](#local-tools) · [Permission Engine](#permission-engine) · [Audit Logging](#audit-logging) · [Hooks](#hooks)
 - [MCP Server](#mcp-server) · [MCP Client](#mcp-client)
 - [Configuration](#configuration) · [Instructions & Memory](#instructions--memory) · [Sessions](#sessions) · [Context compaction](#context-compaction)
@@ -191,9 +191,11 @@ shan schedule list                # local scheduled tasks
 
 Flags: `-y/--yes` auto-approve; `--agent` named agent; `--dangerously-skip-permissions` skip checks in interactive mode; `--setup` interactive wizard.
 
-### Voice Front Brain (macOS)
+### Voice Front Brain
 
 `shan koe` is Kocoro's realtime voice interface. It speaks as one consistent assistant and handles computer tasks while you keep talking. Each request stays as one task by default and splits into parallel work only when you explicitly ask; results from tasks started by the same parallel response are held until the group is terminal and then spoken in one update.
+
+The same front brain runs on iPhone. `shan koe` is the macOS entry point, and Kocoro for iOS embeds the identical Go brain through a gomobile bridge rather than a second implementation, so turn-taking, the tool authorities below, and delegated-task delivery behave the same on both. The phone contributes only what it owns — its microphone and speaker, and a relay that reaches your Mac's daemon through Shannon Cloud. Work you delegate mid-call keeps running and still lands as a report if you hang up.
 
 Voice transport is WebRTC for every provider. `--provider auto` (the default) connects OpenAI first and falls back to Qwen only when a ready session cannot be established before media or user input begins; it never switches provider mid-call. `--provider openai` and `--provider qwen` force one route without fallback. Qwen's API key stays in Shannon Cloud: Koe sends only the SDP offer through the daemon and then carries media directly to Qwen. If an active provider session expires, queued task results survive the reconnect, while the replacement session explicitly treats earlier voice wording as unavailable instead of pretending conversational continuity.
 
@@ -237,7 +239,7 @@ Type `/` in the TUI for the interactive menu:
 
 > `/research` and `/swarm` are also accepted via `POST /message` with `Accept: text/event-stream` (HTTP clients including Kocoro Desktop).
 
-Subcommands: `shan mcp serve`, `shan daemon {start,stop,status}`, `shan schedule {create,list,update,remove,enable,disable}`, `shan sessions sync`, `shan koe` ([Voice Front Brain](#voice-front-brain-macos)), `shan ghostty workspace`, `shan update`.
+Subcommands: `shan mcp serve`, `shan daemon {start,stop,status}`, `shan schedule {create,list,update,remove,enable,disable}`, `shan sessions sync`, `shan koe` ([Voice Front Brain](#voice-front-brain)), `shan ghostty workspace`, `shan update`.
 
 ## Local Tools
 

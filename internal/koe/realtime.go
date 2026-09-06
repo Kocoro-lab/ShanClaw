@@ -1,5 +1,3 @@
-//go:build darwin && cgo
-
 package koe
 
 import (
@@ -22,9 +20,12 @@ import (
 // function_call_output, then response.create). In production sendFn is the data
 // channel SendText; in tests it captures.
 type eventHandler struct {
-	disp   *Dispatcher
-	state  *CallState
-	audio  *AudioIO // nil in unit tests; the production half-duplex gate target
+	disp  *Dispatcher
+	state *CallState
+	// audio is nil in unit tests; the production half-duplex gate target. Always
+	// assign it through normalizeAudioController — a typed-nil implementation
+	// would defeat the `h.audio != nil` guards below (see audiocontroller.go).
+	audio  AudioController
 	sendFn func(any) error
 	// respBusy is true while a realtime response is generating. The serialized
 	// sender must not send response.create while one is active (GA rejects it with
@@ -296,6 +297,25 @@ const (
 	// idle hold and hard cap are noticed.
 	playbackIdlePollInterval = 25 * time.Millisecond
 
+	// defaultStoppedDrainHoldMS is how long the output level must stay silent
+	// AFTER output_audio_buffer.stopped before the speaking gate releases.
+	// stopped is the SERVER's send-buffer drain, not local playout: the client
+	// jitter buffer still holds audio at that moment. Measured live on iOS
+	// (2026-08-18): 550-900 ms still buffered at stopped on a jittery path, so
+	// the old fixed tail reopened the mic onto Kocoro's still-playing tail — the
+	// next turn then carried Kocoro's own voice (the "echo" reports). WORKLOAD:
+	// the iOS level meter updates from inbound-rtp stats every 200 ms, so the
+	// hold must span at least two updates. SYMPTOM if too low: the mic opens
+	// onto the buffered tail; if too high: dead air before the mic reopens.
+	// OVERRIDE: KOE_STOPPED_DRAIN_HOLD_MS.
+	defaultStoppedDrainHoldMS = 500
+	// defaultStoppedDrainCapMS bounds the post-stopped drain wait so a wedged
+	// level reading cannot keep the mic muted — the same backstop role the 60 s
+	// cap plays for the lost-stop-event watchdog, but far tighter, because after
+	// stopped the remaining local audio is at most the jitter buffer (a few
+	// seconds). OVERRIDE: KOE_STOPPED_DRAIN_CAP_MS.
+	defaultStoppedDrainCapMS = 8000
+
 	defaultLocalCommitFallbackMS = 500
 	// defaultLocalCommitAckMS is how long the fallback waits for the server to ack
 	// its manual input_audio_buffer.commit before concluding the user's audio never
@@ -388,6 +408,83 @@ func (h *eventHandler) voiceStateAfterSpeaking() string {
 
 func (h *eventHandler) releaseSpeakingTail() {
 	h.releaseSpeakingAfter(time.Duration(koeEnvInt("KOE_SPEAKING_TAIL_MS", defaultSpeakingTailMS)) * time.Millisecond)
+}
+
+// releaseSpeakingAfterStoppedDrain releases the speaking gate after
+// output_audio_buffer.stopped — the normal end of a spoken turn — once LOCAL
+// playout has audibly drained, never on the server's clock alone.
+//
+// stopped only proves the server flushed its send buffer. The client's jitter
+// buffer still holds audio at that moment, and on a jittery path NetEQ inflates
+// it well past the old fixed 900 ms tail (measured live 2026-08-18: 550-900 ms
+// buffered at stopped, mic reopening onto the still-playing tail — which the
+// next turn then hears as Kocoro's own voice). Release therefore requires BOTH:
+//
+//   - the tail floor (KOE_SPEAKING_TAIL_MS): keeps the pre-existing room-settle
+//     margin, and keeps hosts whose playout drains near-instantly at stopped
+//     (the macOS render path) on exactly the old timing, and
+//   - the output level silent for the drain hold: the local-playout proof.
+//
+// The hard cap bounds a wedged level reading; a real new response (or an
+// interrupt) bumps the epoch and this poller stands down, exactly like
+// releaseSpeakingAfterOutputBufferWait. A side benefit on slow-draining hosts:
+// SetPlaybackEnabled(false) no longer fires while the local queue is still
+// audible, so the release cannot truncate a tail it did not wait for.
+//
+// It bumps BOTH epochs because it TAKES OVER from the missing-stop-event
+// watchdog, which owns playbackDrainEpoch alone. stopped is not an edge case
+// that occasionally follows an armed watchdog: it arrives AFTER response.done
+// by protocol, so outputBufferActive is still set at response.done and the
+// watchdog is armed on every spoken turn. Bumping only speakingEpoch left both
+// pollers live until the next response.created, and each turn released twice —
+// measured on stock defaults 2026-08-28, the stale watchdog firing ~970 ms
+// after the real release (SetSpeaking(false), SetPlaybackEnabled(false),
+// maybeRestoreUserMic, a second voice_state, plus outputBufferActive/
+// remoteAudioTailUntil writes from a turn that had already ended). The duplicate
+// is mostly absorbed downstream today, but the watchdog has no tail floor of its
+// own — it releases on the idle hold alone — so whenever it wins the race it
+// also skips the room-settle margin this path exists to guarantee.
+func (h *eventHandler) releaseSpeakingAfterStoppedDrain() {
+	tail := time.Duration(koeEnvInt("KOE_SPEAKING_TAIL_MS", defaultSpeakingTailMS)) * time.Millisecond
+	hold := time.Duration(koeEnvInt("KOE_STOPPED_DRAIN_HOLD_MS", defaultStoppedDrainHoldMS)) * time.Millisecond
+	hardCap := time.Duration(koeEnvInt("KOE_STOPPED_DRAIN_CAP_MS", defaultStoppedDrainCapMS)) * time.Millisecond
+	h.playbackDrainEpoch.Add(1)
+	epoch := h.speakingEpoch.Add(1)
+	go func() {
+		start := time.Now()
+		minRelease := start.Add(tail)
+		deadline := start.Add(hardCap)
+		ticker := time.NewTicker(playbackIdlePollInterval)
+		defer ticker.Stop()
+		var idleSince time.Time
+		for {
+			<-ticker.C
+			if h.speakingEpoch.Load() != epoch {
+				return // a new response (or an interrupt) took over
+			}
+			now := time.Now()
+			if h.audio == nil || h.audio.PlaybackIdle() {
+				if idleSince.IsZero() {
+					idleSince = now
+				}
+			} else {
+				idleSince = time.Time{} // still audible — keep waiting
+			}
+			drained := !idleSince.IsZero() && now.Sub(idleSince) >= hold
+			if (drained && !now.Before(minRelease)) || now.After(deadline) {
+				break
+			}
+		}
+		if h.speakingEpoch.Load() != epoch {
+			return
+		}
+		if h.audio != nil {
+			h.audio.SetSpeaking(false)
+			h.audio.SetPlaybackEnabled(false)
+		}
+		h.maybeRestoreUserMic()
+		h.emitVoiceState(h.voiceStateAfterSpeaking())
+	}()
 }
 
 // releaseSpeakingAfterOutputBufferWait is the missing-stop-event watchdog. It is
@@ -844,7 +941,7 @@ var (
 	responseRequestSeq atomic.Uint64
 )
 
-func newEventHandler(disp *Dispatcher, state *CallState, audio *AudioIO, sendFn func(any) error) *eventHandler {
+func newEventHandler(disp *Dispatcher, state *CallState, audio AudioController, sendFn func(any) error) *eventHandler {
 	mailbox := NewResultMailbox()
 	if state != nil {
 		mailbox.BeginBurst(state.BurstID())
@@ -852,12 +949,12 @@ func newEventHandler(disp *Dispatcher, state *CallState, audio *AudioIO, sendFn 
 	return newEventHandlerWithMailbox(disp, state, audio, sendFn, mailbox, nil)
 }
 
-func newEventHandlerWithMailbox(disp *Dispatcher, state *CallState, audio *AudioIO, sendFn func(any) error, mailbox *ResultMailbox, canAnnounce func() bool) *eventHandler {
+func newEventHandlerWithMailbox(disp *Dispatcher, state *CallState, audio AudioController, sendFn func(any) error, mailbox *ResultMailbox, canAnnounce func() bool) *eventHandler {
 	if mailbox == nil {
 		mailbox = NewResultMailbox()
 	}
 	h := &eventHandler{
-		disp: disp, state: state, audio: audio, sendFn: sendFn,
+		disp: disp, state: state, audio: normalizeAudioController(audio), sendFn: sendFn,
 		respReq:       make(chan responseCreateRequest, 8),
 		loopRespReq:   make(chan responseCreateRequest, 1),
 		deferredReq:   make(chan deferredFunctionResult, 8),
@@ -2538,10 +2635,13 @@ func (h *eventHandler) handleEvent(ctx context.Context, raw []byte) {
 			return
 		}
 		h.clearActiveResponseID("")
-		// WebRTC-only: reply audio fully drained (fires after response.done) — the
-		// PRECISE SPEAKING→IDLE boundary. Keep a short local tail because CoreAudio
-		// can still have speaker energy after the server says its output buffer ended.
-		h.releaseSpeakingTail()
+		// WebRTC-only: the SERVER's output buffer drained (fires after
+		// response.done). NOT the local SPEAKING→IDLE boundary: the client's
+		// jitter buffer still holds audio here — 550-900 ms measured live on a
+		// jittery path — so releasing on a fixed tail reopened the mic onto
+		// Kocoro's still-playing tail (the echo reports). Wait for the LOCAL
+		// drain, with the tail as floor and a hard cap as backstop.
+		h.releaseSpeakingAfterStoppedDrain()
 	case "response.done":
 		if h.state != nil {
 			h.resultMailbox.SealTaskResponse(h.state.BurstID(), ev.Response.ID)

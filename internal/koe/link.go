@@ -1,5 +1,3 @@
-//go:build darwin && cgo
-
 // Package koe is the voice front-brain's process-local library: the HTTP link to
 // the daemon back-brain, the agent name-resolution ladder, and the voice-tool
 // schemas. It talks to the daemon over localhost JSON and never imports
@@ -13,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +85,9 @@ func (c *DaemonClient) MintViaDaemonWithPrincipal(ctx context.Context, model str
 	c.authorize(req)
 	resp, err := c.controlClient.Do(req)
 	if err != nil {
-		return "", "", err
+		// Typed so provider selection can tell "the local relay is down" from
+		// "Cloud said no" — see DaemonRelayError.
+		return "", "", &DaemonRelayError{Err: err}
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
@@ -125,7 +126,9 @@ func (c *DaemonClient) ExchangeSDPViaDaemonWithPrincipal(ctx context.Context, pr
 	c.authorize(req)
 	resp, err := c.controlClient.Do(req)
 	if err != nil {
-		return "", "", err
+		// Typed so provider selection can tell "the local relay is down" from
+		// "Cloud said no" — see DaemonRelayError.
+		return "", "", &DaemonRelayError{Err: err}
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
@@ -150,6 +153,25 @@ type RealtimeBootstrapError struct {
 func (e *RealtimeBootstrapError) Error() string {
 	return fmt.Sprintf("realtime bootstrap failed: HTTP %d: %s", e.StatusCode, e.Body)
 }
+
+// DaemonRelayError marks a failure to REACH the local daemon relay, as opposed
+// to a failure the relay reported back from Cloud.
+//
+// The distinction is load-bearing for provider selection. Both providers mint
+// and exchange SDP through this same localhost relay, so being unable to reach
+// it says nothing whatsoever about OpenAI — and falling back to Qwen cannot
+// help, because Qwen rides the identical dead path. Measured 2026-08-27: a
+// three-second window where koe outlived a daemon restart was classified as
+// "OpenAI unavailable", opened the 5-minute circuit, and pinned every
+// subsequent call onto a provider the backend had not even configured. Voice
+// stayed broken for five minutes with OpenAI healthy the whole time.
+type DaemonRelayError struct{ Err error }
+
+func (e *DaemonRelayError) Error() string {
+	return "daemon relay unreachable: " + e.Err.Error()
+}
+
+func (e *DaemonRelayError) Unwrap() error { return e.Err }
 
 // FetchPersona pulls the small-tier-distilled spoken-persona context (who the
 // user is, how to address them — derived from the user's instructions + memory)
@@ -359,49 +381,33 @@ func (c *DaemonClient) DoTask(ctx context.Context, req DoTaskRequest) (DoTaskOut
 	if err != nil {
 		return DoTaskOutcome{}, err
 	}
-
-	var parsed struct {
-		Reply         string                `json:"reply"`
-		SpokenSummary string                `json:"spoken_summary"`
-		SessionID     string                `json:"session_id"`
-		Agent         string                `json:"agent"`
-		Partial       bool                  `json:"partial"`
-		FailureCode   string                `json:"failure_code"`
-		Deliverables  []Deliverable         `json:"deliverables"`
-		Status        string                `json:"status"`
-		Route         string                `json:"route"`
-		Reason        string                `json:"reason"`
-		Error         string                `json:"error"`
-		ExecutionRun  *executionprofile.Run `json:"execution_run"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return DoTaskOutcome{}, fmt.Errorf("decode POST /message response (status %d): %w; body=%s", resp.StatusCode, err, string(raw))
-	}
-	if parsed.Error != "" {
-		return DoTaskOutcome{}, fmt.Errorf("daemon error (status %d): %s", resp.StatusCode, parsed.Error)
-	}
-
-	switch parsed.Status {
-	case "":
-		return DoTaskOutcome{
-			Kind: OutcomeCompleted, Reply: parsed.Reply, SpokenSummary: parsed.SpokenSummary, SessionID: parsed.SessionID,
-			Agent: parsed.Agent, Partial: parsed.Partial, FailureCode: parsed.FailureCode,
-			Deliverables: append([]Deliverable(nil), parsed.Deliverables...),
-			ExecutionRun: parsed.ExecutionRun,
-		}, nil
-	case "injected", "retracted_before_delivery":
-		return DoTaskOutcome{Kind: OutcomeInjected, Route: parsed.Route}, nil
-	default: // "rejected" (and any future status) → treat as a structured rejection
-		return DoTaskOutcome{Kind: OutcomeRejected, Route: parsed.Route, Reason: parsed.Reason}, nil
-	}
+	return parseMessageResponse(raw, resp.StatusCode)
 }
 
 // cancelReasons mirrors agenttypes.ParseCancelReason on the daemon (server.go:898).
 // Validating client-side avoids a guaranteed 400 round-trip. The daemon accepts
 // five reasons (the fifth, sibling_error, is missing from its own 400 message
-// string but accepted by ParseCancelReason) — keep this list complete.
-var cancelReasons = map[string]struct{}{
-	"user_cancel": {}, "interrupt": {}, "background": {}, "idle_timeout": {}, "sibling_error": {},
+// string but accepted by ParseCancelReason) — keep this list complete. The
+// default is the first entry, and the error text is built from the list, so the
+// accepted set and the message it prints cannot drift apart the way the
+// daemon's did.
+var cancelReasons = []string{"user_cancel", "interrupt", "background", "idle_timeout", "sibling_error"}
+
+// normalizeCancelReason applies the empty-string default and rejects anything
+// the daemon would 400.
+//
+// Shared by DaemonClient.Cancel and the host-relayed externalBackend for the
+// same reason parseMessageResponse is shared: a cancel crossing the gomobile
+// bridge must not be able to carry a reason the local path would have refused,
+// or iOS and macOS disagree about what a valid cancel even is.
+func normalizeCancelReason(reason string) (string, error) {
+	if reason == "" {
+		return cancelReasons[0], nil
+	}
+	if slices.Contains(cancelReasons, reason) {
+		return reason, nil
+	}
+	return "", fmt.Errorf("unknown cancel reason %q (want %s)", reason, strings.Join(cancelReasons, "|"))
 }
 
 // CancelRequest cancels the in-flight run on a route. RouteKey is the burst key
@@ -416,12 +422,11 @@ type CancelRequest struct {
 // Cancel POSTs /cancel. Returns an error for an unknown reason (caught locally),
 // transport failure, or a non-2xx daemon response.
 func (c *DaemonClient) Cancel(ctx context.Context, req CancelRequest) error {
-	if req.Reason == "" {
-		req.Reason = "user_cancel"
+	reason, err := normalizeCancelReason(req.Reason)
+	if err != nil {
+		return err
 	}
-	if _, ok := cancelReasons[req.Reason]; !ok {
-		return fmt.Errorf("unknown cancel reason %q (want user_cancel|interrupt|background|idle_timeout)", req.Reason)
-	}
+	req.Reason = reason
 	body, err := json.Marshal(req)
 	if err != nil {
 		return err

@@ -5,6 +5,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -467,7 +468,7 @@ func TestKoePersonaAckIsBareAndNoPreAnswer(t *testing.T) {
 }
 
 func TestKoePersonaSeparatesCurrentHandoffFromLaterTurns(t *testing.T) {
-	combined := strings.ToLower(koePersona + koeMultiTaskPersona)
+	combined := strings.ToLower(koePersona + koe.MultiTaskPersona)
 	for _, want := range []string{
 		"after the do_task call, emit no more audio in this response",
 		"later user turns may continue normally while the task is running",
@@ -525,7 +526,7 @@ func TestKoePersonaUsesRealtimeStructureAndVoiceStyle(t *testing.T) {
 }
 
 func TestKoePersonaDefaultsToOneTaskAndMakesExplicitParallelScopesDisjoint(t *testing.T) {
-	combined := koePersona + koeMultiTaskPersona + koe.ParallelTaskInstructions
+	combined := koePersona + koe.MultiTaskPersona + koe.ParallelTaskInstructions
 	for _, want := range []string{
 		"Default to exactly one do_task call.",
 		"only when the user explicitly asks",
@@ -743,12 +744,12 @@ func TestBaseKoePersona(t *testing.T) {
 		t.Errorf("empty language should give the bare base persona")
 	}
 	zh := baseKoePersona(koeConfig{language: "zh"})
-	if !strings.Contains(zh, koeLanguageInstruction("zh")) ||
-		strings.Contains(zh, koeDefaultLanguageSection) || strings.Count(zh, "# Language") != 1 {
+	if !strings.Contains(zh, koe.PersonaLanguageSection("zh")) ||
+		strings.Contains(zh, koe.PersonaLanguageSection("")) || strings.Count(zh, "# Language") != 1 {
 		t.Errorf("zh base persona missing base or language pin: %q", zh)
 	}
 	t.Setenv("KOE_TASK_LEDGER", "1")
-	if got := baseKoePersona(koeConfig{}); !strings.Contains(got, koeMultiTaskPersona) {
+	if got := baseKoePersona(koeConfig{}); !strings.Contains(got, koe.MultiTaskPersona) {
 		t.Error("ledger persona must teach immediate ack and multi-task addressing")
 	}
 }
@@ -767,12 +768,12 @@ func TestBuildKoePersonaAssembly(t *testing.T) {
 
 	agents := []koe.AgentSummary{{Slug: "finance", DisplayName: "Finance"}}
 	got := buildKoePersona(context.Background(), koe.NewDaemonClient(daemon.URL), koeConfig{language: "en"}, agents)
-	for _, want := range []string{"# Role and Objective", "USER_CONTEXT_MARKER", koeAgentListLine(agents), koeLanguageInstruction("en"), koeMultiTaskPersona} {
+	for _, want := range []string{"# Role and Objective", "USER_CONTEXT_MARKER", koeAgentListLine(agents), koe.PersonaLanguageSection("en"), koe.MultiTaskPersona} {
 		if !strings.Contains(got, want) {
 			t.Errorf("buildKoePersona missing %q", want)
 		}
 	}
-	if strings.Contains(got, koeDefaultLanguageSection) || strings.Count(got, "# Language") != 1 {
+	if strings.Contains(got, koe.PersonaLanguageSection("")) || strings.Count(got, "# Language") != 1 {
 		t.Errorf("buildKoePersona has conflicting language authorities: %q", got)
 	}
 }
@@ -998,5 +999,58 @@ func TestBargeInBackendWarning(t *testing.T) {
 func TestKoePersonaAllowsUserNameFromInstructions(t *testing.T) {
 	if !strings.Contains(koePersona, "established facts") {
 		t.Fatal("koePersona missing the user-name/personal-context exemption to the anti-hallucination rule")
+	}
+}
+
+// TestAutoStopsSkippingOpenAIOnceQwenIsKnownUnconfigured pins the order the two
+// negative caches are actually learned in.
+//
+// openAICircuitWorthOpening() already refuses to OPEN the circuit for a fallback
+// known unusable, but on the first failure nothing is known about Qwen yet — the
+// circuit opens, and only the fallback attempt it triggers discovers that the
+// backend has no Qwen at all. Consuming the circuit without re-reading
+// qwenHealth therefore pinned the whole cooldown onto a provider guaranteed to
+// refuse: every call failed, a possibly-recovered OpenAI was never retried, and
+// the error surfaced to the user named the wrong provider.
+func TestAutoStopsSkippingOpenAIOnceQwenIsKnownUnconfigured(t *testing.T) {
+	c := &realtimeConnector{
+		mode:       koe.ProviderAuto,
+		circuit:    koe.NewOpenAICircuit(5 * time.Minute),
+		qwenHealth: koe.NewFallbackHealth(10 * time.Minute),
+	}
+	if c.autoShouldSkipOpenAI() {
+		t.Fatal("a fresh connector must try OpenAI first")
+	}
+
+	// One eligible OpenAI failure opens the circuit. Nothing is known about the
+	// fallback yet, so skipping OpenAI is still the right call here.
+	c.circuit.RecordFailure(&koe.RealtimeConnectError{
+		Provider: koe.ProviderOpenAI, Stage: "ice", Err: errors.New("ice gathering failed"),
+	})
+	if !c.circuit.Skip() {
+		t.Fatal("an eligible failure did not open the circuit")
+	}
+	if !c.autoShouldSkipOpenAI() {
+		t.Fatal("an open circuit with a usable fallback must skip OpenAI")
+	}
+
+	// The fallback attempt that failure triggered reports the backend has no Qwen.
+	c.noteQwenOutcome(errors.New(`qwen bootstrap 503: {"code":"provider_not_configured"}`))
+	if !c.qwenHealth.Unavailable() {
+		t.Fatal("provider_not_configured did not mark the fallback unavailable")
+	}
+	if !c.circuit.Skip() {
+		t.Fatal("precondition: the circuit is still open, nothing clears it on its own")
+	}
+	if c.autoShouldSkipOpenAI() {
+		t.Fatal("Auto kept skipping OpenAI for a fallback it already knows is unconfigured")
+	}
+
+	// Forced providers never consult this decision at all.
+	for _, mode := range []koe.RealtimeProvider{koe.ProviderOpenAI, koe.ProviderQwen} {
+		forced := &realtimeConnector{mode: mode, circuit: c.circuit, qwenHealth: koe.NewFallbackHealth(0)}
+		if forced.autoShouldSkipOpenAI() {
+			t.Fatalf("forced %s must not take the Auto cooldown branch", mode)
+		}
 	}
 }

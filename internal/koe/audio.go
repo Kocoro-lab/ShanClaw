@@ -1,4 +1,4 @@
-//go:build darwin && cgo
+//go:build darwin && !ios && cgo
 
 package koe
 
@@ -119,19 +119,6 @@ type AudioIO struct {
 	outLevel atomic.Uint64
 }
 
-// rmsLevel returns the RMS amplitude of a PCM frame normalized to 0..1.
-func rmsLevel(pcm []int16) float64 {
-	if len(pcm) == 0 {
-		return 0
-	}
-	var sumSq float64
-	for _, s := range pcm {
-		v := float64(s)
-		sumSq += v * v
-	}
-	return math.Sqrt(sumSq/float64(len(pcm))) / 32768.0
-}
-
 func (a *AudioIO) setInputLevel(l float64) { a.inLevel.Store(math.Float64bits(l)) }
 func (a *AudioIO) setOutputLevel(l float64) {
 	a.outLevel.Store(math.Float64bits(l))
@@ -150,14 +137,6 @@ func (a *AudioIO) InputLevel() float64 {
 
 // OutputLevel reports the latest played frame RMS (0..1).
 func (a *AudioIO) OutputLevel() float64 { return math.Float64frombits(a.outLevel.Load()) }
-
-// playbackIdleLevelEps separates "reply audio audibly playing" from silence /
-// warm-session comfort noise for PlaybackIdle. WORKLOAD: TTS speech RMS runs
-// well above 0.01; decoded silent RTP and drained pipelines sit near 0. SYMPTOM
-// if too high: the speaking watchdog releases (and cuts) mid-speech; if too low:
-// residual noise keeps the watchdog waiting until its hard cap. OVERRIDE: none —
-// revisit alongside the playback paths' level reporting.
-const playbackIdleLevelEps = 0.005
 
 // PlaybackIdle reports whether reply audio is audibly playing. All playback
 // paths (oto, VPIO, renderInto file/debug) zero the output level when their

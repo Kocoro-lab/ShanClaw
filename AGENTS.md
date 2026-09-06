@@ -351,17 +351,17 @@ text. Unattended runs remain silent.
 
 ## Voice Front-Brain
 
-`internal/koe` is macOS native speech-to-speech. Keep `stop_speaking` (output),
-`cancel` (work, by `task_id` or `all_running=true`), and terminal `end_call`
-(session) as SEPARATE authorities. `do_task` defaults to one call per response;
-parallel calls require an explicit request and disjoint scopes. Group calls from
-one response: wait until all are terminal, acknowledge together, then request
-one spoken continuation. Qwen's boundary adds a tool-call quiet window because
-it may withhold `response.done`. `MapDoTaskOutcome` maps partial runs to
-`incomplete` without a digest; never voice a cut progress tail as the result.
-ASR never admits ordinary turns/barge-in. Without native floor control, only
-terminal exit/goodbye—not stop-speaking—phrases are a lifecycle backstop; the
-model owns the rest.
+`internal/koe` is THE voice brain for BOTH hosts: macOS in-process, iOS via
+`koe.Session`/`mobile/koebind`. Never reimplement host-side. `stop_speaking`
+(output), `cancel` (work, `task_id` or `all_running=true`) and `end_call`
+(session) stay SEPARATE authorities. `do_task` defaults to one call/response;
+parallel needs an explicit request and disjoint scopes. Group one response's
+calls: wait until all terminal, ack together, then one continuation. Qwen adds
+a tool-call quiet window; it may withhold `response.done`. `MapDoTaskOutcome`
+maps partial runs to `incomplete`, no digest; never voice a cut tail. ASR
+admits neither ordinary turns nor barge-in; without native floor control only
+terminal exit/goodbye phrases back it up. `do_task` rides a cancel-detached
+context: hang-up must not kill the run.
 
 Realtime providers use WebRTC. Auto falls back OpenAI→Qwen only on eligible
 pre-ready network/timeout/5xx failures (Cloud-wrapped OpenAI auth/config is 502;

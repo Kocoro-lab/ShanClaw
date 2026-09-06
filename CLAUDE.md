@@ -95,6 +95,58 @@ Both `stop_speaking` and `end_call` say nothing and send no
   (`conversation.item.truncate` to the audio actually heard) so the model never
   treats unspoken text as said.
 
+**One brain, two hosts.** `internal/koe` is the ONLY voice brain. macOS drives it
+in-process from `cmd/koe.go`; iOS drives the same code through `koe.Session` and
+the `mobile/koebind` gomobile bridge. Nothing in this list may be reimplemented
+host-side — a Swift copy of the turn/tool/delivery rules is how the two platforms
+start disagreeing about what a call even is. The host supplies only what it
+physically owns, through four seams: `Backend` (delegation; `*DaemonClient` on
+macOS, `ExternalTaskBackend` relayed to Cloud's remote-run channel on iOS),
+`ExternalAudio`/`AudioController` (capture + playout gating), `Send` (one client
+event onto the transport), and `ControlApp`. Outcome parsing is deliberately
+shared (`parseMessageResponse`, `normalizeCancelReason`) so delegation semantics
+cannot drift between platforms.
+
+- **`mobile/` is a SEPARATE Go module** (its own `go.mod`), so the root module's
+  vet/build/test/tidy steps do not see it — CI repeats them under
+  `working-directory: mobile`. The bound surface obeys gobind's rules: no maps,
+  no struct slices, no `context.Context`, strings and JSON strings in and out.
+  `gobind` SILENTLY SKIPS an unbindable exported func and exits 0 (measured,
+  x/mobile v0.0.0-20260813), so the CI step is a codegen smoke check, not proof
+  the whole surface bound. Reviewing it against `bind.go`'s header stays human work.
+- **`Session.HandleEvent` / `Bridge.HandleEvent` must not be called
+  concurrently.** The event path writes plain non-atomic handler state and is
+  safe only because transports deliver serially (pion's `OnMessage`; one serial
+  queue on iOS). A concurrent dispatch queue corrupts it with no error and no crash.
+- **`do_task` runs on `context.WithoutCancel`, on BOTH platforms**, and the
+  macOS HTTP client is `Timeout: 0`. That is the contract, not an oversight: a
+  hang-up must not kill the back-brain run, whose report persists in the session.
+  It is bounded by the daemon's idle watchdog. Do not "fix" it with a timeout;
+  hosts release only their own observation chain (iOS: `VoiceTaskBackendAdapter.close()`).
+- **Release ownership: two epochs, and a path that supersedes another must retire
+  it.** `speakingEpoch` gates the speaking release; `playbackDrainEpoch` gates
+  ONLY the missing-stop-event watchdog (`releaseSpeakingAfterOutputBufferWait`).
+  `output_audio_buffer.stopped` arrives after `response.done` by protocol, so the
+  watchdog is armed on every spoken turn and the stopped path must bump BOTH —
+  bumping one left two pollers live and released each turn twice (2026-08-28).
+  Drain tuning: `KOE_STOPPED_DRAIN_HOLD_MS` (500) / `KOE_STOPPED_DRAIN_CAP_MS`
+  (8000) for the stopped path, `KOE_PLAYBACK_IDLE_HOLD_MS` (1500) for the watchdog.
+- **The spoken persona lives in `internal/koe/persona.go`**, not in any host.
+  `SpokenPersona(lang, host)` + `AppendTaskLedgerPersona` compose it; `Host`
+  selects the host-specific slots. Golden tests pin the text, so intentional
+  wording changes must re-dump the goldens.
+- **`call_state` carries an additive `reason`.** The state stays `ended` —
+  Desktop's decoder DROPS a `call_state` whose state it does not know, so a new
+  state value would leave an older Desktop's call UI open forever. `EmitCallFailed`
+  therefore takes only the reason. The `CallFailure*` set is closed and Desktop
+  localizes it; adding a code is a coordinated release.
+- **Idle pre-warm retry is one lane.** `WarmRetryPolicy` decides the delay and
+  whether to retry at all; `WarmRetryLane` guarantees exactly one live timer,
+  its generation counter guarded by the caller's `sessMu` so "am I current" and
+  the caller's session-state check are one decision. Auto's provider choice
+  consults BOTH negative caches (`OpenAICircuit` and `FallbackHealth`) —
+  the circuit alone would pin a cooldown onto a fallback already known unusable.
+
 ### Provider Architecture
 
 `provider` config key selects the LLM backend: default → `GatewayClient` (Cloud); `ollama` → `OllamaClient` (OpenAI-compatible). Both implement `Complete` / `CompleteStream`.

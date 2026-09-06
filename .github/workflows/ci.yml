@@ -148,3 +148,43 @@ jobs:
         # daemon work that actually needs CI coverage. Runs locally.
         # Remove this skip if Ghostty is ever added to the runner setup.
         run: go test -count=1 -timeout=5m -skip '^TestGhosttyTool_ListTabs_Empty$' ./...
+
+      - name: Nested mobile module (iOS voice-brain binding)
+        # mobile/ is a separate module on purpose (see its own go.mod), so every
+        # step above — vet, build, the cross-compile matrix, test — skips it
+        # entirely. koebind was therefore outside CI for its whole lifetime,
+        # while being the source of the iOS Koe.xcframework: a break here ships
+        # as "the iOS voice call cannot be rebuilt at all".
+        #
+        # The gobind step runs the binding GENERATOR, not just the compiler, so a
+        # codegen-fatal change to the bound API is caught here rather than on
+        # the one machine that later tries to produce the framework. It uses
+        # `go tool gobind`, which resolves to the x/mobile revision this module
+        # pins, so CI and a developer's local bind agree by construction.
+        #
+        # Scope, measured rather than assumed (x/mobile v0.0.0-20260813,
+        # 2026-08-27): an exported func returning a map — unbindable per
+        # gobind's own rules — is silently SKIPPED by both `gobind` and
+        # `gomobile bind`, both exiting 0. So this is a smoke check on the
+        # generator, NOT a guarantee that every unbindable shape is rejected.
+        # Reviewing the bound surface against the rules in bind.go's header is
+        # still a human job.
+        #
+        # The full `gomobile bind` is deliberately not run: it needs Xcode and
+        # minutes, and the Desktop repo gates the artifact itself in an iOS
+        # build phase (scripts/verify-koe-framework.sh).
+        #
+        # The module checks above ("Verify modules", "Check go.mod/go.sum are
+        # tidy") have no working-directory, so they only ever saw the root
+        # module: mobile/go.mod could drift indefinitely without failing CI.
+        # They are repeated here rather than generalised, because the root steps
+        # run before Go is even pointed at this directory.
+        working-directory: mobile
+        run: |
+          go mod verify
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+          go build ./...
+          go vet ./...
+          go test -count=1 -timeout=5m ./...
+          go tool gobind -lang=objc -outdir="$(mktemp -d)" ./koebind

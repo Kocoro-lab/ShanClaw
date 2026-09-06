@@ -1,6 +1,11 @@
-//go:build darwin && cgo
-
 package koe
+
+// Realtime provider identity, model allowlist, connect-error taxonomy and the
+// OpenAI health circuit. Deliberately untagged, same rule as audio_level.go:
+// realtime.go is built for iOS via gomobile and references ProviderQwen, so
+// keeping these behind `darwin && cgo` broke `go build ./...` for linux,
+// windows and darwin-without-cgo — the exact matrix ci.yml gates on. Nothing
+// here touches cgo; it is pure Go and compiles everywhere the brain does.
 
 import (
 	"context"
@@ -96,6 +101,18 @@ func AutoFallbackEligible(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
+	// Being unable to REACH the local daemon relay is not evidence about any
+	// provider: both mint and exchange SDP through that same localhost hop, so
+	// falling back cannot help and recording it against OpenAI's health is
+	// simply wrong. Measured 2026-08-27: a three-second window where koe
+	// outlived a daemon restart opened the 5-minute circuit and pinned every
+	// call onto a provider the backend had not configured, with OpenAI healthy
+	// throughout. Checked FIRST because the underlying error is a net.Error and
+	// would otherwise match the transport arm below.
+	var relayErr *DaemonRelayError
+	if errors.As(err, &relayErr) {
+		return false
+	}
 	var ce *RealtimeConnectError
 	if !errors.As(err, &ce) || ce.Provider != ProviderOpenAI {
 		return false
@@ -159,4 +176,75 @@ func (c *OpenAICircuit) RecordSuccess() {
 	c.mu.Lock()
 	c.openUntil = time.Time{}
 	c.mu.Unlock()
+}
+
+// IsProviderNotConfigured reports whether Cloud refused a provider because it
+// is not configured on that deployment, as opposed to being temporarily down.
+//
+// Distinguishing them matters for Auto mode: an unconfigured fallback is not a
+// destination at all, so trading a working primary for it — and opening the
+// primary's circuit to make that trade stick — is a strict downgrade. Observed
+// as HTTP 503 {"code":"provider_not_configured"} from a dev deployment with no
+// Qwen WebRTC (30 occurrences, 2026-08-27).
+func IsProviderNotConfigured(err error) bool {
+	if err == nil {
+		return false
+	}
+	var bootstrap *RealtimeBootstrapError
+	if errors.As(err, &bootstrap) && strings.Contains(bootstrap.Body, "provider_not_configured") {
+		return true
+	}
+	return strings.Contains(err.Error(), "provider_not_configured")
+}
+
+// FallbackHealth is a process-local negative cache for Auto mode's fallback
+// target, mirroring OpenAICircuit's shape on the other side of the decision.
+//
+// It exists so a fallback the backend has told us it cannot serve stops being
+// treated as an escape route. The TTL is deliberate rather than permanent: a
+// deployment can gain the provider through a config change, and a process that
+// remembered "unavailable" forever would never notice. A successful connect
+// clears it immediately.
+type FallbackHealth struct {
+	mu              sync.Mutex
+	unavailableTill time.Time
+	ttl             time.Duration
+	now             func() time.Time
+}
+
+func NewFallbackHealth(ttl time.Duration) *FallbackHealth {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	return &FallbackHealth{ttl: ttl, now: time.Now}
+}
+
+// RecordUnavailable marks the fallback unusable for the TTL.
+func (f *FallbackHealth) RecordUnavailable() {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	f.unavailableTill = f.now().Add(f.ttl)
+	f.mu.Unlock()
+}
+
+// RecordAvailable clears the cache — the fallback just worked.
+func (f *FallbackHealth) RecordAvailable() {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	f.unavailableTill = time.Time{}
+	f.mu.Unlock()
+}
+
+// Unavailable reports whether the fallback is known unusable right now.
+func (f *FallbackHealth) Unavailable() bool {
+	if f == nil {
+		return false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.now().Before(f.unavailableTill)
 }
